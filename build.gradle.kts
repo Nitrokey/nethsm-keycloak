@@ -2,7 +2,7 @@ plugins {
     kotlin("jvm") version "2.4.10"
 }
 
-val keycloakVersion: String by project
+val keycloakVersion = project.property("keycloakVersion") as String
 
 repositories {
     mavenCentral()
@@ -25,6 +25,11 @@ dependencies {
     compileOnly("org.keycloak:keycloak-server-spi-private:$keycloakVersion")
     compileOnly("org.keycloak:keycloak-services:$keycloakVersion")
     compileOnly("org.keycloak:keycloak-core:$keycloakVersion")
+
+    // Shipped by Keycloak in lib/lib/main (4.5.14 in 26.7.x). Used instead of
+    // java.net.http because that client forces hostname verification regardless of the
+    // SSLParameters it is given, which rules out pinning a self-signed NetHSM cert.
+    compileOnly("org.apache.httpcomponents:httpclient:4.5.14")
 
     testImplementation(kotlin("test"))
     testImplementation("org.keycloak:keycloak-server-spi:$keycloakVersion")
@@ -49,7 +54,7 @@ tasks.test {
  * For third-party distribution, add com.gradleup.shadow and relocate `kotlin.**`
  * -- and nothing else.
  */
-val collectRuntimeJars by tasks.registering(Sync::class) {
+val collectRuntimeJars = tasks.register<Sync>("collectRuntimeJars") {
     description = "Stages the provider jar + kotlin-stdlib for /opt/keycloak/providers"
     group = "distribution"
     from(tasks.jar)

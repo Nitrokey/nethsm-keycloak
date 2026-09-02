@@ -41,11 +41,15 @@ services:
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
-      # The test NetHSM's TLS cert is self-signed. M3 replaces this with a
-      # fingerprint-pinned truststore; for M0/M1 the extension trusts it explicitly.
-      NETHSM_URL: https://nethsm:8443/api/v1
-      NETHSM_OPERATOR_USER: keycloak
-      NETHSM_OPERATOR_PASSPHRASE: KeycloakKeycloak
+      # spi-keys--nethsm--* -- the global connection profile. In production the
+      # passphrase comes from a container secret, which is the reason it lives in
+      # server config rather than in each realm's component config.
+      KC_SPI_KEYS__NETHSM__URL: https://nethsm:8443/api/v1
+      KC_SPI_KEYS__NETHSM__USERNAME: keycloak
+      KC_SPI_KEYS__NETHSM__PASSPHRASE: KeycloakKeycloak
+      # The test image serves a self-signed certificate. Production pins instead:
+      # KC_SPI_KEYS__NETHSM__TLS_FINGERPRINTS: <sha256 of the NetHSM cert>
+      KC_SPI_KEYS__NETHSM__TLS_INSECURE: "true"
     ports:
       - "8080:8080"
     command: ["start-dev", "--log-level=info,com.nitrokey:debug"]
