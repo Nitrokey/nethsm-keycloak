@@ -3,9 +3,9 @@
 A Keycloak key provider that natively integrates with [Nitrokey NetHSM](https://www.nitrokey.com/products/nethsm)
 to perform key operations (e.g. signing) while private keys never leave the HSM.
 
-Status: **RSA signing works.** A Keycloak access token signed inside a NetHSM
-verifies against the realm's published JWKS. RS256/384/512 and PS256/384/512 are
-implemented; EC and Ed25519 are added separately.
+Status: **every JOSE signing algorithm NetHSM can do is implemented.** Keycloak
+access tokens signed inside the HSM verify against the realm's published JWKS for RSA,
+ECDSA and Ed25519.
 
 ## Quality Warning
 
@@ -68,12 +68,17 @@ different algorithms — they would publish two JWKS entries under one `kid`.
 Derived from each key's own `type` and `mechanisms`, so no algorithm is configured per
 key — only the RS256/384/512 choice for a hash-agnostic PKCS1 key.
 
-| Keycloak alg | NetHSM key type | `SignMode` | Note | |
-|---|---|---|---|---|
-| RS256/384/512 | RSA | `PKCS1` | send the digest **prefixed with the DigestInfo header** | ✅ |
-| PS256/384/512 | RSA | `PSS_SHA256/384/512` | send the bare digest | ✅ |
-| ES256/384/512 | EC_P256/384/521 | `ECDSA` | returns ASN.1 DER; JOSE needs fixed-width R‖S | planned |
-| EdDSA | Curve25519 | `EdDSA` | send the raw message; returns 64-byte r‖s, already JOSE-shaped | planned |
+| Keycloak alg | NetHSM key type | `SignMode` | Note |
+|---|---|---|---|
+| RS256/384/512 | RSA | `PKCS1` | send the digest **prefixed with the DigestInfo header** |
+| PS256/384/512 | RSA | `PSS_SHA256/384/512` | send the bare digest |
+| ES256/384/512 | EC_P256/384/521 | `ECDSA` | returns ASN.1 DER; converted to fixed-width R‖S using Keycloak's own `ECDSAAlgorithm`, so HSM-backed and local EC keys are byte-identical |
+| EdDSA | Curve25519 | `EdDSA` | send the **raw message**, not a digest — Ed25519 hashes internally and derives its nonce from that hash. Returns 64-byte r‖s, already JOSE-shaped |
+
+Verified end to end against a real NetHSM, each token checked with an independent
+library against the realm JWKS: RS256, RS384, PS256, ES256, ES384, ES512, EdDSA.
+RS512, PS384 and PS512 share a code path with a verified sibling and differ only by a
+hash constant, which is covered by unit tests.
 
 ## Known limitations
 
@@ -141,7 +146,16 @@ recreated, so re-run it after each `up --build`.
 | `kc-rsa-pkcs1` | RSA 2048 | `RSA_Signature_PKCS1` | RS256/384/512 |
 | `kc-rsa-pss` | RSA 2048 | `RSA_Signature_PSS_SHA*` | PS256/384/512 |
 | `kc-ec-p256` | EC_P256 | `ECDSA_Signature` | ES256 |
+| `kc-ec-p384` | EC_P384 | `ECDSA_Signature` | ES384 |
+| `kc-ec-p521` | EC_P521 | `ECDSA_Signature` | ES512 |
 | `kc-ed25519` | Curve25519 | `EdDSA_Signature` | EdDSA |
+
+`register-provider.sh` defaults to RS256; override to register any other algorithm:
+
+```bash
+NAME=nethsm-es256 KEY_PREFIX=kc-ec-p256  ALGORITHM=ES256 ./keycloak/register-provider.sh
+NAME=nethsm-eddsa KEY_PREFIX=kc-ed25519  ALGORITHM=EdDSA ./keycloak/register-provider.sh
+```
 
 Tear down with `docker compose down`.
 

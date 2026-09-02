@@ -7,10 +7,11 @@ import org.keycloak.crypto.SignatureSignerContext
 import java.security.MessageDigest
 
 /**
- * Hashes locally, then has NetHSM apply the padding and the private key.
+ * Hashes locally where the algorithm calls for it, then has NetHSM apply the padding and
+ * the private key.
  *
- * The private key never leaves the HSM, and the only thing crossing the wire is a
- * digest.
+ * The private key never leaves the HSM, and for everything except Ed25519 the only thing
+ * crossing the wire is a digest.
  */
 class NetHsmSignatureSignerContext(
     private val key: NetHsmKeyWrapper,
@@ -25,14 +26,21 @@ class NetHsmSignatureSignerContext(
 
     override fun sign(data: ByteArray): ByteArray {
         val algorithm = key.algorithm
-        val digest = MessageDigest.getInstance(getHashAlgorithm()).digest(data)
 
-        // PKCS1 mode signs the value verbatim, so EMSA-PKCS1-v1_5 requires the
-        // DigestInfo header. PSS_* derives it from the mode and wants the bare digest.
-        val message = NetHsmAlgorithms.digestInfoPrefix(algorithm)?.plus(digest) ?: digest
+        val message = if (NetHsmAlgorithms.signsRawMessage(algorithm)) {
+            // Ed25519 hashes the message internally and derives its nonce from that
+            // hash, so it has to see the message itself.
+            data
+        } else {
+            val digest = MessageDigest.getInstance(getHashAlgorithm()).digest(data)
+            // PKCS1 mode signs the value verbatim, so EMSA-PKCS1-v1_5 needs the
+            // DigestInfo header. PSS_* and ECDSA want the bare digest.
+            NetHsmAlgorithms.digestInfoPrefix(algorithm)?.plus(digest) ?: digest
+        }
 
         return try {
-            client.sign(key.keyId, NetHsmAlgorithms.signMode(algorithm), message)
+            val signature = client.sign(key.keyId, NetHsmAlgorithms.signMode(algorithm), message)
+            NetHsmAlgorithms.toJoseSignature(algorithm, signature)
         } catch (e: Exception) {
             throw SignatureException("NetHSM failed to sign with key '${key.keyId}' ($algorithm)", e)
         }

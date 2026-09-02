@@ -36,6 +36,10 @@ dependencies {
     testImplementation("org.keycloak:keycloak-server-spi-private:$keycloakVersion")
     testImplementation("org.keycloak:keycloak-services:$keycloakVersion")
     testImplementation("org.keycloak:keycloak-core:$keycloakVersion")
+
+    // ECDSAAlgorithm's DER converters go through CryptoIntegration.getProvider(), which
+    // Keycloak initialises at startup. Tests have to stand that up themselves.
+    testRuntimeOnly("org.keycloak:keycloak-crypto-default:$keycloakVersion")
 }
 
 tasks.test {

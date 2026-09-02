@@ -117,12 +117,15 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
             Attributes.ALGORITHM_KEY,
             "Algorithm",
             "Algorithm these keys are published under. A NetHSM RSA_Signature_PKCS1 key is " +
-                "hash-agnostic and can serve any of RS256/384/512, so the choice is made here; " +
-                "PSS keys only appear under the algorithm their mechanism names.",
+                "hash-agnostic and can serve any of RS256/384/512, so the choice is made here. " +
+                "Every other mechanism implies exactly one algorithm: PSS keys from the hash " +
+                "their mechanism names, EC keys from their curve, Curve25519 keys from EdDSA.",
             ProviderConfigProperty.LIST_TYPE,
             DEFAULT_ALGORITHM,
             Algorithm.RS256, Algorithm.RS384, Algorithm.RS512,
             Algorithm.PS256, Algorithm.PS384, Algorithm.PS512,
+            Algorithm.ES256, Algorithm.ES384, Algorithm.ES512,
+            Algorithm.EdDSA,
         )
 
         private val KEY_PREFIX_PATTERN = Regex("^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")

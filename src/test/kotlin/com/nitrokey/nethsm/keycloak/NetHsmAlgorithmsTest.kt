@@ -1,7 +1,9 @@
 package com.nitrokey.nethsm.keycloak
 
 import com.nitrokey.nethsm.keycloak.client.NetHsmKey
+import org.keycloak.common.crypto.CryptoIntegration
 import org.keycloak.crypto.Algorithm
+import org.keycloak.crypto.ECDSAAlgorithm
 import java.security.KeyPairGenerator
 import java.security.PublicKey
 import kotlin.test.Test
@@ -12,6 +14,19 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class NetHsmAlgorithmsTest {
+
+    private companion object {
+        /**
+         * `ECDSAAlgorithm`'s DER converters resolve a `CryptoProvider` through
+         * `CryptoIntegration`, which a running Keycloak initialises during startup.
+         * Without this, the conversion fails with "Illegal state. Please init first".
+         */
+        init {
+            if (!CryptoIntegration.isInitialised()) {
+                CryptoIntegration.init(NetHsmAlgorithmsTest::class.java.classLoader)
+            }
+        }
+    }
 
     private val publicKey: PublicKey = KeyPairGenerator.getInstance("RSA")
         .apply { initialize(2048) }
@@ -52,9 +67,67 @@ class NetHsmAlgorithmsTest {
     }
 
     @Test
-    fun `EC and Curve25519 are not claimed yet`() {
-        assertTrue(NetHsmAlgorithms.supportedAlgorithms(key("EC_P256", "ECDSA_Signature")).isEmpty())
-        assertTrue(NetHsmAlgorithms.supportedAlgorithms(key("Curve25519", "EdDSA_Signature")).isEmpty())
+    fun `each EC curve implies exactly one algorithm`() {
+        assertEquals(setOf(Algorithm.ES256), NetHsmAlgorithms.supportedAlgorithms(key("EC_P256", "ECDSA_Signature")))
+        assertEquals(setOf(Algorithm.ES384), NetHsmAlgorithms.supportedAlgorithms(key("EC_P384", "ECDSA_Signature")))
+        assertEquals(setOf(Algorithm.ES512), NetHsmAlgorithms.supportedAlgorithms(key("EC_P521", "ECDSA_Signature")))
+    }
+
+    @Test
+    fun `Curve25519 implies EdDSA`() {
+        assertEquals(
+            setOf(Algorithm.EdDSA),
+            NetHsmAlgorithms.supportedAlgorithms(key("Curve25519", "EdDSA_Signature")),
+        )
+    }
+
+    @Test
+    fun `curves NetHSM offers but JOSE has no algorithm for are skipped`() {
+        assertTrue(NetHsmAlgorithms.supportedAlgorithms(key("EC_P256K1", "ECDSA_Signature")).isEmpty())
+        assertTrue(NetHsmAlgorithms.supportedAlgorithms(key("BrainpoolP256", "ECDSA_Signature")).isEmpty())
+    }
+
+    @Test
+    fun `a key without the matching signature mechanism is skipped`() {
+        assertTrue(NetHsmAlgorithms.supportedAlgorithms(key("EC_P256", "EdDSA_Signature")).isEmpty())
+        assertTrue(NetHsmAlgorithms.supportedAlgorithms(key("Curve25519", "ECDSA_Signature")).isEmpty())
+    }
+
+    @Test
+    fun `only Ed25519 gets the raw message`() {
+        assertTrue(NetHsmAlgorithms.signsRawMessage(Algorithm.EdDSA))
+        listOf(Algorithm.RS256, Algorithm.PS256, Algorithm.ES256).forEach {
+            assertTrue(!NetHsmAlgorithms.signsRawMessage(it), "$it must be pre-hashed")
+        }
+    }
+
+    @Test
+    fun `curve is reported for EC and Curve25519 but not RSA`() {
+        assertEquals("P-256", NetHsmAlgorithms.curveFor("EC_P256"))
+        assertEquals("P-521", NetHsmAlgorithms.curveFor("EC_P521"))
+        assertEquals("Ed25519", NetHsmAlgorithms.curveFor("Curve25519"))
+        assertNull(NetHsmAlgorithms.curveFor("RSA"))
+    }
+
+    /**
+     * NetHSM returns ECDSA as ASN.1 DER; JWS needs fixed-width r||s. Round-tripping
+     * through Keycloak's own converters proves this extension and Keycloak's local EC
+     * signer agree on the wire format.
+     */
+    @Test
+    fun `ECDSA signatures are converted from DER to fixed-width r and s`() {
+        listOf(Algorithm.ES256 to 64, Algorithm.ES384 to 96, Algorithm.ES512 to 132).forEach { (alg, len) ->
+            val concatenated = ByteArray(len) { (it % 251 + 1).toByte() }
+            val der = ECDSAAlgorithm.concatenatedRSToASN1DER(concatenated, len)
+            assertContentEquals(concatenated, NetHsmAlgorithms.toJoseSignature(alg, der), alg)
+        }
+    }
+
+    @Test
+    fun `EdDSA and RSA signatures pass through untouched`() {
+        val raw = ByteArray(64) { it.toByte() }
+        assertContentEquals(raw, NetHsmAlgorithms.toJoseSignature(Algorithm.EdDSA, raw))
+        assertContentEquals(raw, NetHsmAlgorithms.toJoseSignature(Algorithm.RS256, raw))
     }
 
     @Test
@@ -63,6 +136,9 @@ class NetHsmAlgorithmsTest {
         assertEquals("PKCS1", NetHsmAlgorithms.signMode(Algorithm.RS512))
         assertEquals("PSS_SHA256", NetHsmAlgorithms.signMode(Algorithm.PS256))
         assertEquals("PSS_SHA512", NetHsmAlgorithms.signMode(Algorithm.PS512))
+        assertEquals("ECDSA", NetHsmAlgorithms.signMode(Algorithm.ES256))
+        assertEquals("ECDSA", NetHsmAlgorithms.signMode(Algorithm.ES512))
+        assertEquals("EdDSA", NetHsmAlgorithms.signMode(Algorithm.EdDSA))
     }
 
     /**

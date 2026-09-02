@@ -4,10 +4,10 @@ import com.nitrokey.nethsm.keycloak.client.KeyDiscovery
 import com.nitrokey.nethsm.keycloak.client.NetHsmClient
 import com.nitrokey.nethsm.keycloak.hsm.HsmKeyProvider
 import com.nitrokey.nethsm.keycloak.hsm.HsmKeyWrapper
+import com.nitrokey.nethsm.keycloak.hsm.keyTypeForAlgorithm
 import org.jboss.logging.Logger
 import org.keycloak.component.ComponentModel
 import org.keycloak.crypto.KeyStatus
-import org.keycloak.crypto.KeyType
 import org.keycloak.crypto.KeyUse
 import org.keycloak.keys.Attributes
 import java.util.stream.Stream
@@ -53,7 +53,8 @@ class NetHsmKeyProvider(
                     providerPriority = priority
                     kid = key.id
                     use = KeyUse.SIG
-                    type = KeyType.RSA
+                    type = keyTypeForAlgorithm(this@NetHsmKeyProvider.algorithm)
+                    curve = NetHsmAlgorithms.curveFor(key.type)
                     this.algorithm = this@NetHsmKeyProvider.algorithm
                     this.status = this@NetHsmKeyProvider.status
                     publicKey = key.publicKey

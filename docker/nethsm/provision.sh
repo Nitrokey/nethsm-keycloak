@@ -64,8 +64,11 @@ generate_key() {
 generate_key kc-rsa-pkcs1 RSA 2048 '"RSA_Signature_PKCS1"'
 # PS256/384/512 -- SignMode PSS_SHA*, bare digest.
 generate_key kc-rsa-pss RSA 2048 '"RSA_Signature_PSS_SHA256","RSA_Signature_PSS_SHA384","RSA_Signature_PSS_SHA512"'
-# ES256 -- SignMode ECDSA, returns ASN.1 DER, must be converted to raw R||S for JOSE.
+# ES256/384/512 -- SignMode ECDSA. The curve alone determines the algorithm. NetHSM
+# returns ASN.1 DER, which has to be converted to fixed-width R||S for JOSE.
 generate_key kc-ec-p256 EC_P256 '' '"ECDSA_Signature"'
+generate_key kc-ec-p384 EC_P384 '' '"ECDSA_Signature"'
+generate_key kc-ec-p521 EC_P521 '' '"ECDSA_Signature"'
 # EdDSA -- SignMode EdDSA, takes the raw message, returns 64-byte r||s (already JOSE-shaped).
 generate_key kc-ed25519 Curve25519 '' '"EdDSA_Signature"'
 
