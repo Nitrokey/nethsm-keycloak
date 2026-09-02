@@ -3,9 +3,10 @@
 A Keycloak key provider that natively integrates with [Nitrokey NetHSM](https://www.nitrokey.com/products/nethsm)
 to perform key operations (e.g. signing) while private keys never leave the HSM.
 
-Status: **every JOSE signing algorithm NetHSM can do is implemented.** Keycloak
-access tokens signed inside the HSM verify against the realm's published JWKS for RSA,
-ECDSA and Ed25519.
+Status: **signing complete and hardened.** Keycloak access tokens signed inside the
+HSM verify against the realm's published JWKS for RSA, ECDSA and Ed25519, the connection
+is pooled and certificate-pinned, and an unreachable NetHSM fails closed rather than
+letting Keycloak fall back to a software key.
 
 ## Quality Warning
 
@@ -33,6 +34,7 @@ secret; each realm only says which key ids it claims.
 | `spi-keys--nethsm--retry-delay-ms` | `200` | between attempts |
 | `spi-keys--nethsm--max-connections` | `20` | connection pool bound |
 | `spi-keys--nethsm--discovery-cache-seconds` | `300` | how long discovered keys stay usable |
+| `spi-keys--nethsm--on-unavailable` | `fail` | `fail` or `degrade` — see [Failure behaviour](#failure-behaviour) |
 
 Omitting `url` leaves the provider registered but inert, so the jar is safe to ship in an
 image that has no NetHSM.
@@ -43,7 +45,16 @@ Administrator out of the server configuration is least privilege to apply rather
 guarantee this extension enforces.
 
 Pinning replaces hostname verification, because a pinned NetHSM certificate is usually
-self-signed with a CN that does not match the address Keycloak uses.
+self-signed with a CN that does not match the address Keycloak uses. Get the fingerprint
+with:
+
+```bash
+echo | openssl s_client -connect nethsm:8443 2>/dev/null \
+  | openssl x509 -fingerprint -sha256 -noout
+```
+
+Colons and case are ignored. A certificate that does not match is refused and the log
+names the fingerprint it actually saw, which is the value to pin.
 
 ### Realm (*Realm Settings → Keys → Providers → nethsm*)
 
@@ -80,15 +91,43 @@ library against the realm JWKS: RS256, RS384, PS256, ES256, ES384, ES512, EdDSA.
 RS512, PS384 and PS512 share a code path with a verified sibling and differ only by a
 hash constant, which is covered by unit tests.
 
+## Failure behaviour
+
+An unreachable NetHSM must not quietly become "this realm has no keys", because that is
+not a neutral state. `DefaultKeyManager` reacts to a realm with no active key by asking
+the generated key provider factories for a fallback — it logs *"No keys found for
+realm={0} and algorithm={1} for use={2}. Generating keys."* — and Keycloak then carries
+on issuing tokens signed by a **software** key that never went near the HSM.
+
+So the provider fails closed by default, in three layers:
+
+| Situation | Behaviour |
+|---|---|
+| NetHSM unreachable, keys previously discovered | serves cached metadata; signing then fails per request |
+| NetHSM unreachable mid-refresh (the key list arrived, the keys did not) | treated as a failed discovery, not as "this prefix matches nothing" |
+| NetHSM unreachable, nothing cached (cold start) | `on-unavailable=fail` (default): propagates the error, so no fallback key is generated |
+| | `on-unavailable=degrade`: contributes no keys and lets Keycloak generate a software key |
+
+Verified: with NetHSM stopped and a cold cache, the realm keys endpoint returns 500, the
+log says `nothing is cached; failing closed`, and **no software key is generated**.
+
+Failing closed has an operational edge worth planning for. **If a realm's default
+signature algorithm is served by NetHSM keys and NetHSM goes away, nobody can obtain an
+admin token for that realm either** — including you, to fix it. Recovery is through
+server configuration rather than the admin API: set
+`spi-keys--nethsm--on-unavailable=degrade` and restart, or disable the component. Keeping
+the `master` realm on non-HSM keys avoids the situation entirely.
+
+As defence in depth, the fallback can be removed altogether by disabling the generated
+key providers, so that a realm with no HSM keys errors instead of inventing one:
+
+```
+spi-keys--rsa-generated--enabled=false
+spi-keys--ec-generated--enabled=false
+```
+
 ## Known limitations
 
-- **A cold start against an unreachable NetHSM falls back to a software key.** If a
-  provider yields no keys, `DefaultKeyManager` logs *"No keys found for realm={0} and
-  algorithm={1} for use={2}. Generating keys."* and generates one, after which Keycloak
-  keeps issuing tokens signed outside the HSM. Discovery results are cached and never
-  evicted on failure, so this cannot happen after a transient outage — but a Keycloak
-  that starts while NetHSM is down or `Locked` has nothing cached to serve. Watch for
-  that log line; hardening this is planned separately.
 - **Signing only.** The framework abstracts `SignatureProvider`, not
   `CekManagementProvider`, so HSM-backed RSA-OAEP for encrypted tokens (JWE) is not
   covered. NetHSM supports OAEP decrypt, so this is buildable, but it is net-new work in

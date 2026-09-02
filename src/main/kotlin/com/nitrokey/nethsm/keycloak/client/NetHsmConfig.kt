@@ -37,9 +37,34 @@ class NetHsmConfig(
     val connectTimeout: Duration = Duration.ofSeconds(3),
     /** Upper bound on concurrent connections to NetHSM, shared by every realm. */
     val maxConnections: Int,
+    /** What to do when NetHSM cannot be reached and no key metadata is cached. */
+    val onUnavailable: OnUnavailable,
     /** How long discovered key metadata stays usable, including while NetHSM is unreachable. */
     val discoveryCache: Duration,
 ) {
+    /**
+     * How the provider behaves when discovery fails with an empty cache.
+     *
+     * This is a security choice, not a robustness one. Returning no keys is not neutral:
+     * `DefaultKeyManager` responds to a realm with no active key by asking the generated
+     * key provider factories for a fallback, and Keycloak then keeps issuing tokens
+     * signed by a *software* key that never went near the HSM.
+     */
+    enum class OnUnavailable {
+        /**
+         * Propagate the failure, so the realm has no usable keys and token issuance
+         * errors out. Nothing gets signed outside the HSM. The default.
+         */
+        FAIL,
+
+        /**
+         * Contribute no keys and let Keycloak carry on, accepting that it may generate
+         * and use a software key. Only appropriate where availability genuinely outranks
+         * the guarantee the HSM exists to provide.
+         */
+        DEGRADE,
+    }
+
     companion object {
         const val URL = "url"
         const val USERNAME = "username"
@@ -51,6 +76,7 @@ class NetHsmConfig(
         const val RETRIES = "retries"
         const val RETRY_DELAY_MS = "retry-delay-ms"
         const val MAX_CONNECTIONS = "max-connections"
+        const val ON_UNAVAILABLE = "on-unavailable"
         const val DISCOVERY_CACHE_SECONDS = "discovery-cache-seconds"
 
         /**
@@ -89,6 +115,12 @@ class NetHsmConfig(
                 retries = scope.getInt(RETRIES, 2),
                 retryDelay = Duration.ofMillis(scope.getLong(RETRY_DELAY_MS, 200L)),
                 maxConnections = scope.getInt(MAX_CONNECTIONS, 20),
+                onUnavailable = scope.get(ON_UNAVAILABLE, OnUnavailable.FAIL.name)
+                    .uppercase()
+                    .let { name ->
+                        OnUnavailable.entries.firstOrNull { it.name == name }
+                            ?: error("$ON_UNAVAILABLE must be one of ${OnUnavailable.entries.joinToString("/") { it.name.lowercase() }}")
+                    },
                 discoveryCache = Duration.ofSeconds(scope.getLong(DISCOVERY_CACHE_SECONDS, 300L)),
             )
         }

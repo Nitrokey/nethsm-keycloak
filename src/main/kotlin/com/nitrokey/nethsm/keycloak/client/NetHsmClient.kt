@@ -1,6 +1,7 @@
 package com.nitrokey.nethsm.keycloak.client
 
 import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.NullNode
 import org.apache.http.client.config.RequestConfig
 import org.apache.http.client.methods.HttpGet
 import org.apache.http.client.methods.HttpPost
@@ -44,7 +45,7 @@ class NetHsmRequestException(val status: Int, message: String) : RuntimeExceptio
  * pinning against a self-signed NetHSM certificate impossible without setting a
  * JVM-wide system property.
  */
-class NetHsmClient(private val config: NetHsmConfig) : Closeable {
+class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource {
 
     private val log = Logger.getLogger(NetHsmClient::class.java)
     private val cursor = AtomicInteger(0)
@@ -69,12 +70,24 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable {
         )
         .build()
 
+    /**
+     * `GET /health/ready` -- 200 when NetHSM is Operational, 412 when it is Locked or
+     * still booting. Unauthenticated, and used only for a startup log line.
+     */
+    fun ready(): Boolean = try {
+        request(HttpGet("/health/ready"))
+        true
+    } catch (e: Exception) {
+        log.debugf(e, "NetHSM readiness probe failed")
+        false
+    }
+
     /** `GET /keys/{prefix}*` -- ids only, so callers follow up with [key] per id. */
-    fun keyIds(prefix: String): List<String> =
+    override fun keyIds(prefix: String): List<String> =
         request(HttpGet("/keys/${encode(prefix)}*")).mapNotNull { it.path("id").asText(null) }
 
     /** `GET /keys/{id}` -- type, mechanisms and public key in one response. */
-    fun key(id: String): NetHsmKey? = NetHsmKey.parse(id, request(HttpGet("/keys/${encode(id)}")))
+    override fun key(id: String): NetHsmKey? = NetHsmKey.parse(id, request(HttpGet("/keys/${encode(id)}")))
 
     /**
      * `POST /keys/{id}/sign`. [message] is whatever the mode expects: a DigestInfo-prefixed
@@ -126,7 +139,13 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable {
             val status = response.statusLine.statusCode
             val body = response.entity?.let { EntityUtils.toByteArray(it) }
             when {
-                status in 200..299 -> JsonSerialization.mapper.readTree(body)
+                // The health endpoints answer 200 with no body, hence the NullNode.
+                status in 200..299 ->
+                    if (body == null || body.isEmpty()) {
+                        NullNode.instance
+                    } else {
+                        JsonSerialization.mapper.readTree(body)
+                    }
                 // 412 is NetHSM's "not Operational" -- locked or still booting.
                 status == 412 || status >= 500 ->
                     throw NetHsmUnavailableException("${request.method} $path returned $status")

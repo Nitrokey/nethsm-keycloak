@@ -14,10 +14,14 @@ import java.util.concurrent.ConcurrentHashMap
  * That matters more than it looks. If a provider yields no keys, `DefaultKeyManager`
  * logs "No keys found for realm={0} and algorithm={1} for use={2}. Generating keys." and
  * generates a *software* key, and Keycloak carries on issuing tokens signed outside the
- * HSM. Serving stale metadata is what keeps that from happening after a transient
- * outage; see the README for the cold-start case, which this cannot cover.
+ * HSM. Serving stale metadata prevents that after a transient outage; a cold start has
+ * nothing to serve, which is what [NetHsmConfig.OnUnavailable] decides.
  */
-class KeyDiscovery(private val client: NetHsmClient, private val ttl: Duration) {
+class KeyDiscovery(
+    private val source: KeySource,
+    private val ttl: Duration,
+    private val onUnavailable: NetHsmConfig.OnUnavailable,
+) {
 
     private val log = Logger.getLogger(KeyDiscovery::class.java)
     private val cache = ConcurrentHashMap<String, Entry>()
@@ -31,10 +35,22 @@ class KeyDiscovery(private val client: NetHsmClient, private val ttl: Duration) 
         }
 
         return try {
-            val fresh = client.keyIds(prefix).mapNotNull { id ->
-                runCatching { client.key(id) }
-                    .onFailure { log.warnf(it, "NetHSM key '%s' could not be read, skipping", id) }
-                    .getOrNull()
+            val fresh = source.keyIds(prefix).mapNotNull { id ->
+                try {
+                    source.key(id)
+                } catch (e: NetHsmUnavailableException) {
+                    // The one failure that is not about this key. Skipping it would drop
+                    // every remaining key too, and an empty result is indistinguishable
+                    // from a successful discovery that found nothing -- which Keycloak
+                    // answers by generating a software key. So it goes to the handler
+                    // below, which serves cached keys or fails closed.
+                    throw e
+                } catch (e: Exception) {
+                    // Anything else is this key's own problem -- NetHSM refused it, or it
+                    // is malformed -- and must not sink the rest of the prefix.
+                    log.warnf(e, "NetHSM key '%s' could not be read, skipping", id)
+                    null
+                }
             }
             cache[prefix] = Entry(fresh, Instant.now())
             log.debugf("discovered %d NetHSM key(s) for prefix '%s'", fresh.size, prefix)
@@ -43,14 +59,27 @@ class KeyDiscovery(private val client: NetHsmClient, private val ttl: Duration) 
             if (cached != null) {
                 log.warnf(e, "NetHSM discovery for prefix '%s' failed, serving %d cached key(s)", prefix, cached.keys.size)
                 cached.keys
-            } else {
-                log.errorf(
-                    e,
-                    "NetHSM discovery for prefix '%s' failed and nothing is cached. " +
-                        "Keycloak may now generate a software key for this realm.",
-                    prefix,
-                )
-                emptyList()
+            } else when (onUnavailable) {
+                NetHsmConfig.OnUnavailable.FAIL -> {
+                    log.errorf(
+                        e,
+                        "NetHSM discovery for prefix '%s' failed and nothing is cached; failing closed. " +
+                            "Set spi-keys--nethsm--on-unavailable=degrade to let Keycloak carry on without the HSM.",
+                        prefix,
+                    )
+                    throw e
+                }
+
+                NetHsmConfig.OnUnavailable.DEGRADE -> {
+                    log.errorf(
+                        e,
+                        "NetHSM discovery for prefix '%s' failed and nothing is cached. " +
+                            "on-unavailable=degrade, so Keycloak may now generate and use a SOFTWARE key " +
+                            "for this realm -- tokens would then be signed outside the HSM.",
+                        prefix,
+                    )
+                    emptyList()
+                }
             }
         }
     }

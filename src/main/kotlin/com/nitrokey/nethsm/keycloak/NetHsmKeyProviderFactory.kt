@@ -55,11 +55,25 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
 
         val netHsmClient = NetHsmClient(config)
         client = netHsmClient
-        discovery = KeyDiscovery(netHsmClient, config.discoveryCache)
+        discovery = KeyDiscovery(netHsmClient, config.discoveryCache, config.onUnavailable)
+
         log.infof(
-            "NetHSM key provider ready: %d instance(s), user '%s', discovery cache %s",
+            "NetHSM key provider ready: %d instance(s), user '%s', discovery cache %s, on-unavailable %s",
             config.urls.size, config.username, config.discoveryCache,
+            config.onUnavailable.name.lowercase(),
         )
+
+        // Startup visibility only -- deliberately not fatal, so a NetHSM that is still
+        // booting or Locked does not stop Keycloak from starting. Whether an unreachable
+        // NetHSM is allowed to matter is decided per request by on-unavailable.
+        if (netHsmClient.ready()) {
+            log.debug("NetHSM readiness probe succeeded")
+        } else {
+            log.warn(
+                "NetHSM is not reachable or not Operational at startup. Realms using it will " +
+                    "have no keys until it recovers.",
+            )
+        }
     }
 
     override fun postInit(factory: KeycloakSessionFactory) = Unit
