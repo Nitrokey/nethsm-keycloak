@@ -1,0 +1,10 @@
+com.nitrokey.nethsm.keycloak.hsm.alg.RS256SignatureProviderFactory
+com.nitrokey.nethsm.keycloak.hsm.alg.RS384SignatureProviderFactory
+com.nitrokey.nethsm.keycloak.hsm.alg.RS512SignatureProviderFactory
+com.nitrokey.nethsm.keycloak.hsm.alg.PS256SignatureProviderFactory
+com.nitrokey.nethsm.keycloak.hsm.alg.PS384SignatureProviderFactory
+com.nitrokey.nethsm.keycloak.hsm.alg.PS512SignatureProviderFactory
+com.nitrokey.nethsm.keycloak.hsm.alg.ES256SignatureProviderFactory
+com.nitrokey.nethsm.keycloak.hsm.alg.ES384SignatureProviderFactory
+com.nitrokey.nethsm.keycloak.hsm.alg.ES512SignatureProviderFactory
+com.nitrokey.nethsm.keycloak.hsm.alg.EdDSASignatureProviderFactory

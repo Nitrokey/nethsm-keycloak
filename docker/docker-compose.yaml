@@ -1,0 +1,54 @@
+name: nethsm-keycloak
+
+services:
+  # Factory-state NetHSM. Provisioned by the `provision` service below.
+  # testing-v5.0 is pinned deliberately: RSA PKCS1 sign mechanisms -- what RS256
+  # needs -- are not usable on v3.0.
+  nethsm:
+    image: docker.io/nitrokey/nethsm:testing-v5.0
+    ports:
+      - "8443:8443"
+    environment:
+      DEBUG_LOG: "1"
+    # No volume: every `up` starts from factory state so the fixture is reproducible.
+    # Add `- nethsm-data:/data` to persist keys across restarts.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk -o /dev/null https://localhost:8443/api/v1/health/alive"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  provision:
+    image: docker.io/curlimages/curl:latest
+    depends_on:
+      nethsm:
+        condition: service_healthy
+    volumes:
+      - ./nethsm/provision.sh:/provision.sh:ro
+    environment:
+      NETHSM_URL: https://nethsm:8443/api/v1
+    entrypoint: ["sh", "/provision.sh"]
+
+  keycloak:
+    build:
+      context: ..
+      dockerfile: docker/keycloak/Dockerfile
+      args:
+        KEYCLOAK_VERSION: 26.7.3
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # The test NetHSM's TLS cert is self-signed. M3 replaces this with a
+      # fingerprint-pinned truststore; for M0/M1 the extension trusts it explicitly.
+      NETHSM_URL: https://nethsm:8443/api/v1
+      NETHSM_OPERATOR_USER: keycloak
+      NETHSM_OPERATOR_PASSPHRASE: KeycloakKeycloak
+    ports:
+      - "8080:8080"
+    command: ["start-dev", "--log-level=info,com.nitrokey:debug"]
+
+volumes:
+  nethsm-data:

@@ -1,0 +1,14 @@
+build/
+.gradle/
+.gradle-home/
+.kotlin/
+
+*.iml
+.idea/
+out/
+
+# Local overrides for docker/docker-compose.yaml
+docker/docker-compose.override.yaml
+
+# Per-machine Claude Code settings
+.claude/settings.local.json
