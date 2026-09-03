@@ -35,6 +35,7 @@ secret; each realm only says which key ids it claims.
 | `spi-keys--nethsm--retry-delay-ms` | `200` | between attempts |
 | `spi-keys--nethsm--max-connections` | `20` | connection pool bound |
 | `spi-keys--nethsm--discovery-cache-seconds` | `300` | how long discovered keys stay usable |
+| `spi-keys--nethsm--discovery-max-stale-seconds` | `86400` | how long cached keys may keep being served once refreshes fail |
 | `spi-keys--nethsm--on-unavailable` | `fail` | `fail` or `degrade` — see [Failure behaviour](#failure-behaviour) |
 
 Omitting `url` leaves the provider registered but inert, so the jar is safe to ship in an
@@ -183,6 +184,7 @@ So the provider fails closed by default, in three layers:
 |---|---|
 | NetHSM unreachable, keys previously discovered | serves cached metadata; signing then fails per request |
 | NetHSM unreachable mid-refresh (the key list arrived, the keys did not) | treated as a failed discovery, not as "this prefix matches nothing" |
+| cached keys older than `discovery-max-stale-seconds` | discarded, then handled as if nothing were cached |
 | NetHSM unreachable, nothing cached (cold start) | `on-unavailable=fail` (default): propagates the error, so no fallback key is generated |
 | | `on-unavailable=degrade`: contributes no keys and lets Keycloak generate a software key |
 

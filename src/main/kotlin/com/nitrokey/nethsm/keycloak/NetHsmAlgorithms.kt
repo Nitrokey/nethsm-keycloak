@@ -2,6 +2,7 @@ package com.nitrokey.nethsm.keycloak
 
 import com.nitrokey.nethsm.keycloak.client.NetHsmKey
 import org.keycloak.crypto.Algorithm
+import org.keycloak.crypto.KeyUse
 import org.keycloak.crypto.ECDSAAlgorithm
 import org.keycloak.jose.jwe.JWEConstants
 
@@ -130,6 +131,16 @@ object NetHsmAlgorithms {
         if (key.type != "RSA") return emptySet()
         return DECRYPT_MECHANISMS.filterValues { it in key.mechanisms }.keys
     }
+
+    /**
+     * The algorithms this key can serve for a given use.
+     *
+     * Callers ask rather than choosing a lookup table: the rule that SIG means signature
+     * mechanisms and ENC means decrypt mechanisms belongs next to the two sets it selects
+     * between, not repeated at each call site.
+     */
+    fun algorithmsFor(key: NetHsmKey, use: KeyUse): Set<String> =
+        if (use == KeyUse.ENC) supportedEncryptionAlgorithms(key) else supportedAlgorithms(key)
 
     /** The JCA algorithm name for a NetHSM key type, used to label opaque key handles. */
     fun jcaAlgorithmFor(type: String): String = when {

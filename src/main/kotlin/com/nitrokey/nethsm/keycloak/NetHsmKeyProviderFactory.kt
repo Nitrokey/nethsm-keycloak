@@ -1,8 +1,8 @@
 package com.nitrokey.nethsm.keycloak
 
-import com.nitrokey.nethsm.keycloak.client.KeyDiscovery
-import com.nitrokey.nethsm.keycloak.client.NetHsmClient
 import com.nitrokey.nethsm.keycloak.client.NetHsmConfig
+import com.nitrokey.nethsm.keycloak.client.NetHsmConnection
+import com.nitrokey.nethsm.keycloak.client.NetHsmRequestException
 import com.nitrokey.nethsm.keycloak.hsm.HsmKeyProviderFactory
 import com.nitrokey.nethsm.keycloak.jca.NetHsmSecurityProvider
 import org.jboss.logging.Logger
@@ -35,8 +35,11 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
 
     private val log = Logger.getLogger(NetHsmKeyProviderFactory::class.java)
 
-    private var client: NetHsmClient? = null
-    private var discovery: KeyDiscovery? = null
+    // Volatile because init() writes it on the startup thread and create() reads it on
+    // every request thread. Keycloak's own startup sequencing almost certainly publishes
+    // it safely, but "almost certainly" is not what the memory model guarantees.
+    @Volatile
+    private var connection: NetHsmConnection? = null
     private var configProperties: List<ProviderConfigProperty> = emptyList()
 
     override fun init(scope: Config.Scope) {
@@ -62,9 +65,8 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
         // for it. Registered before any key is handed out.
         NetHsmSecurityProvider.install()
 
-        val netHsmClient = NetHsmClient(config)
-        client = netHsmClient
-        discovery = KeyDiscovery(netHsmClient, config.discoveryCache, config.onUnavailable)
+        val netHsm = NetHsmConnection.open(config)
+        connection = netHsm
 
         log.infof(
             "NetHSM key provider ready: %d instance(s), user '%s', discovery cache %s, on-unavailable %s",
@@ -75,8 +77,9 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
         // Startup visibility only -- deliberately not fatal, so a NetHSM that is still
         // booting or Locked does not stop Keycloak from starting. Whether an unreachable
         // NetHSM is allowed to matter is decided per request by on-unavailable.
-        if (netHsmClient.ready()) {
+        if (netHsm.client.ready()) {
             log.debug("NetHSM readiness probe succeeded")
+            checkCredentials(netHsm)
         } else {
             log.warn(
                 "NetHSM is not reachable or not Operational at startup. Realms using it will " +
@@ -85,10 +88,34 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
         }
     }
 
+    /**
+     * `/health/ready` is unauthenticated, so a successful probe says nothing about the
+     * Operator credential -- the part of this configuration most likely to be mistyped.
+     * One authenticated call turns a wrong passphrase into a startup error instead of a
+     * puzzle at first token request.
+     *
+     * Not fatal, for the same reason the readiness probe is not: whether an unusable
+     * NetHSM stops Keycloak is `on-unavailable`'s decision, made per request.
+     */
+    private fun checkCredentials(netHsm: NetHsmConnection) {
+        runCatching { netHsm.client.keyIds("") }.onFailure { e ->
+            if (e is NetHsmRequestException && (e.status == 401 || e.status == 403)) {
+                log.errorf(
+                    "NetHSM rejected the configured credential with HTTP %d. Check " +
+                        "spi-keys--nethsm--username and --passphrase; every realm using NetHSM " +
+                        "will fail until this is right.",
+                    e.status,
+                )
+            } else {
+                log.debugf(e, "NetHSM credential probe did not complete")
+            }
+        }
+    }
+
     override fun postInit(factory: KeycloakSessionFactory) = Unit
 
     override fun create(session: KeycloakSession, model: ComponentModel): NetHsmKeyProvider =
-        NetHsmKeyProvider(model, discovery, client)
+        NetHsmKeyProvider(model, connection)
 
     override fun validateConfiguration(session: KeycloakSession, realm: RealmModel, model: ComponentModel) {
         ConfigurationValidationHelper.check(model)
@@ -101,8 +128,7 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
 
         // The two lists are disjoint, so a mismatched pair would silently publish nothing.
         val algorithm = model.get(Attributes.ALGORITHM_KEY, DEFAULT_ALGORITHM)
-        val isEncryption = model.get(Attributes.KEY_USE, KeyUse.SIG.getSpecName())
-            .equals(KeyUse.ENC.getSpecName(), ignoreCase = true)
+        val isEncryption = keyUseOf(model) == KeyUse.ENC
         if (isEncryption && algorithm !in NetHsmAlgorithms.cekAlgorithms) {
             throw ComponentValidationException(
                 "$algorithm cannot be used with key use 'enc'. Encryption keys must use one of " +
@@ -113,14 +139,17 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
             throw ComponentValidationException("$algorithm is a key management algorithm; set key use to 'enc'")
         }
 
-        warnIfSigningIsAmbiguous(model)
-
         val prefix = model.get(KEY_PREFIX_KEY, "")
+
         // NetHSM's ID schema is ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$; a prefix has to be a
         // prefix of something matching it, or discovery can never return anything.
+        // Checked before the ambiguity warning, which talks to NetHSM: no point spending
+        // a round trip on a prefix that is already known to be rejected.
         if (!KEY_PREFIX_PATTERN.matches(prefix)) {
             throw ComponentValidationException("Key ID prefix must match ${KEY_PREFIX_PATTERN.pattern}")
         }
+
+        warnIfSigningIsAmbiguous(model, prefix, algorithm)
     }
 
     /**
@@ -132,19 +161,15 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
      * one component is legitimate once it is passive, which is what rotation does with
      * the outgoing generation.
      */
-    private fun warnIfSigningIsAmbiguous(model: ComponentModel) {
-        val isSigning = !model.get(Attributes.KEY_USE, KeyUse.SIG.getSpecName())
-            .equals(KeyUse.ENC.getSpecName(), ignoreCase = true)
-        if (!isSigning || !model.get(Attributes.ACTIVE_KEY, true)) return
+    private fun warnIfSigningIsAmbiguous(model: ComponentModel, prefix: String, algorithm: String) {
+        if (keyUseOf(model) == KeyUse.ENC || !model.get(Attributes.ACTIVE_KEY, true)) return
 
-        val prefix = model.get(KEY_PREFIX_KEY, "")
-        val algorithm = model.get(Attributes.ALGORITHM_KEY, DEFAULT_ALGORITHM)
         // A NetHSM unreachable at save time must not block saving the component.
+        // KeyDiscovery already returns keys ordered by ID, so this sees what will sign.
         val matches = runCatching {
-            discovery?.keys(prefix)
-                ?.filter { algorithm in NetHsmAlgorithms.supportedAlgorithms(it) }
+            connection?.discovery?.keys(prefix)
+                ?.filter { algorithm in NetHsmAlgorithms.algorithmsFor(it, KeyUse.SIG) }
                 ?.map { it.id }
-                ?.sorted()
                 .orEmpty()
         }.getOrDefault(emptyList())
 
@@ -164,13 +189,26 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
     override fun getConfigProperties(): List<ProviderConfigProperty> = configProperties
 
     override fun close() {
-        client?.close()
-        client = null
-        discovery = null
+        connection?.close()
+        connection = null
     }
 
     companion object {
         const val ID = "nethsm"
+
+        /**
+         * The one place key use is parsed. Written out at each call site it drifted into
+         * three copies in two polarities, which is how validateConfiguration and the
+         * provider could disagree about what a component is for.
+         */
+        fun keyUseOf(model: ComponentModel): KeyUse =
+            if (model.get(Attributes.KEY_USE, KeyUse.SIG.getSpecName())
+                    .equals(KeyUse.ENC.getSpecName(), ignoreCase = true)
+            ) {
+                KeyUse.ENC
+            } else {
+                KeyUse.SIG
+            }
 
         private const val HELP_TEXT =
             "Uses keys stored in a Nitrokey NetHSM. Private keys never leave the HSM. " +

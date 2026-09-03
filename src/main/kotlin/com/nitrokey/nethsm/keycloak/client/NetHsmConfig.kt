@@ -41,6 +41,14 @@ class NetHsmConfig(
     val onUnavailable: OnUnavailable,
     /** How long discovered key metadata stays usable, including while NetHSM is unreachable. */
     val discoveryCache: Duration,
+    /**
+     * Upper bound on serving cached metadata after refreshes start failing.
+     *
+     * Serving stale keys through an outage is deliberate, but unbounded staleness means a
+     * key rotated or deleted in NetHSM stays in the realm's JWKS indefinitely. Past this,
+     * the entry is discarded and [onUnavailable] decides, as it does on a cold start.
+     */
+    val discoveryMaxStale: Duration = Duration.ofHours(24),
 ) {
     /**
      * How the provider behaves when discovery fails with an empty cache.
@@ -78,6 +86,7 @@ class NetHsmConfig(
         const val MAX_CONNECTIONS = "max-connections"
         const val ON_UNAVAILABLE = "on-unavailable"
         const val DISCOVERY_CACHE_SECONDS = "discovery-cache-seconds"
+        const val DISCOVERY_MAX_STALE_SECONDS = "discovery-max-stale-seconds"
 
         /**
          * Returns null when no `url` is configured, which is the normal state for a
@@ -122,6 +131,7 @@ class NetHsmConfig(
                             ?: error("$ON_UNAVAILABLE must be one of ${OnUnavailable.entries.joinToString("/") { it.name.lowercase() }}")
                     },
                 discoveryCache = Duration.ofSeconds(scope.getLong(DISCOVERY_CACHE_SECONDS, 300L)),
+                discoveryMaxStale = Duration.ofSeconds(scope.getLong(DISCOVERY_MAX_STALE_SECONDS, 86_400L)),
             )
         }
     }

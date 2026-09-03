@@ -7,6 +7,8 @@ import com.nitrokey.nethsm.keycloak.client.NetHsmKey
 import com.nitrokey.nethsm.keycloak.client.NetHsmUnavailableException
 import java.security.KeyPairGenerator
 import java.time.Duration
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -61,6 +63,19 @@ class KeyDiscoveryTest {
     fun `discovers keys matching the prefix and nothing else`() {
         val source = FakeSource(listOf(rsaKey("kc-a"), rsaKey("kc-b"), rsaKey("other")))
         assertEquals(listOf("kc-a", "kc-b"), discovery(source).keys("kc-").map { it.id })
+    }
+
+    /**
+     * Ordering is part of the contract, not incidental: Keycloak signs with the first key
+     * a provider yields, so if this stops holding, which key signs changes silently.
+     */
+    @Test
+    fun `keys come back ordered by ID, whatever order NetHSM returned them in`() {
+        val source = object : KeySource {
+            override fun keyIds(prefix: String) = listOf("kc-c", "kc-a", "kc-b")
+            override fun key(id: String) = rsaKey(id)
+        }
+        assertEquals(listOf("kc-a", "kc-b", "kc-c"), discovery(source).keys("kc-").map { it.id })
     }
 
     @Test
@@ -147,5 +162,71 @@ class KeyDiscoveryTest {
 
         source.failingPerKey = true
         assertEquals(listOf("kc-a"), discovery.keys("kc-").map { it.id })
+    }
+
+    /**
+     * Serving stale keys through an outage is deliberate; serving them forever is not.
+     * Past the bound the entry is dropped, so a key deleted in NetHSM stops being
+     * published rather than lingering in the realm's JWKS indefinitely.
+     */
+    @Test
+    fun `cached keys are not served past the max-stale bound`() {
+        val source = FakeSource(listOf(rsaKey("kc-a")))
+        val discovery = KeyDiscovery(
+            source,
+            Duration.ZERO,
+            NetHsmConfig.OnUnavailable.FAIL,
+            maxStale = Duration.ZERO,
+        )
+        assertEquals(1, discovery.keys("kc-").size)
+
+        source.failing = true
+        assertFailsWith<NetHsmUnavailableException>("stale entry must not be served past the bound") {
+            discovery.keys("kc-")
+        }
+    }
+
+    @Test
+    fun `within the bound a stale entry is still preferred to failing`() {
+        val source = FakeSource(listOf(rsaKey("kc-a")))
+        val discovery = KeyDiscovery(
+            source,
+            Duration.ZERO,
+            NetHsmConfig.OnUnavailable.FAIL,
+            maxStale = Duration.ofHours(1),
+        )
+        assertEquals(1, discovery.keys("kc-").size)
+
+        source.failing = true
+        assertEquals(listOf("kc-a"), discovery.keys("kc-").map { it.id })
+    }
+
+    /**
+     * The source is held inside the refresh until every thread has had time to arrive.
+     * Without that the winner finishes before the others start, and the test passes
+     * whether or not the refresh is actually single-flighted.
+     */
+    @Test
+    fun `concurrent lookups on a cold cache trigger a single refresh`() {
+        val gate = CountDownLatch(1)
+        val listCalls = AtomicInteger()
+        val source = object : KeySource {
+            override fun keyIds(prefix: String): List<String> {
+                listCalls.incrementAndGet()
+                gate.await()
+                return listOf("kc-a")
+            }
+
+            override fun key(id: String) = rsaKey(id)
+        }
+
+        val discovery = discovery(source)
+        val threads = (1..16).map { Thread { discovery.keys("kc-") } }
+        threads.forEach { it.start() }
+        Thread.sleep(250) // long enough for all 16 to reach the refresh if nothing stops them
+        gate.countDown()
+        threads.forEach { it.join() }
+
+        assertEquals(1, listCalls.get(), "16 threads racing a cold cache should produce one list call")
     }
 }

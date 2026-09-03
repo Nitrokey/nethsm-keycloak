@@ -1,5 +1,6 @@
 package com.nitrokey.nethsm.keycloak
 
+import com.nitrokey.nethsm.keycloak.support.Json
 import com.nitrokey.nethsm.keycloak.support.Jwe
 import com.nitrokey.nethsm.keycloak.support.Keycloak
 import com.nitrokey.nethsm.keycloak.support.NetHsm
@@ -7,6 +8,7 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
+import java.time.Duration
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -49,6 +51,27 @@ class RequestObjectIT {
             realm, "nethsm-enc", keyPrefix = "kc-rsa-oaep",
             algorithm = "RSA-OAEP-256", keyUse = "enc",
         )
+        awaitEncryptionKeyActive()
+    }
+
+    /**
+     * Registering a component and that key being the one Keycloak decrypts with are not
+     * the same instant. Encrypting to a key the authorization endpoint has not adopted
+     * yet fails as "could not decrypt", which looks like a defect in the extension rather
+     * than a test that started too early.
+     */
+    private fun awaitEncryptionKeyActive(timeout: Duration = Duration.ofSeconds(30)) {
+        val deadline = System.nanoTime() + timeout.toNanos()
+        while (System.nanoTime() < deadline) {
+            val active = Json.read(keycloak.realmKeys(realm).body()).path("keys").any {
+                it.path("kid").asText() == "kc-rsa-oaep" &&
+                    it.path("algorithm").asText() == "RSA-OAEP-256" &&
+                    it.path("status").asText() == "ACTIVE"
+            }
+            if (active && keycloak.jwks(realm).path("keys").any { it.path("kid").asText() == "kc-rsa-oaep" }) return
+            Thread.sleep(500)
+        }
+        error("the NetHSM encryption key never became active on realm '$realm'")
     }
 
     @AfterAll
