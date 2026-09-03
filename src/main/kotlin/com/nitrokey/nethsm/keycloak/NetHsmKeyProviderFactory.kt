@@ -113,11 +113,47 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
             throw ComponentValidationException("$algorithm is a key management algorithm; set key use to 'enc'")
         }
 
+        warnIfSigningIsAmbiguous(model)
+
         val prefix = model.get(KEY_PREFIX_KEY, "")
         // NetHSM's ID schema is ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$; a prefix has to be a
         // prefix of something matching it, or discovery can never return anything.
         if (!KEY_PREFIX_PATTERN.matches(prefix)) {
             throw ComponentValidationException("Key ID prefix must match ${KEY_PREFIX_PATTERN.pattern}")
+        }
+    }
+
+    /**
+     * Keycloak signs with the *first* key a provider yields, so an active signing
+     * component matching several keys picks one by id order -- not something an operator
+     * would infer from the configuration.
+     *
+     * Warned at save time rather than per request, and not rejected: several keys under
+     * one component is legitimate once it is passive, which is what rotation does with
+     * the outgoing generation.
+     */
+    private fun warnIfSigningIsAmbiguous(model: ComponentModel) {
+        val isSigning = !model.get(Attributes.KEY_USE, KeyUse.SIG.getSpecName())
+            .equals(KeyUse.ENC.getSpecName(), ignoreCase = true)
+        if (!isSigning || !model.get(Attributes.ACTIVE_KEY, true)) return
+
+        val prefix = model.get(KEY_PREFIX_KEY, "")
+        val algorithm = model.get(Attributes.ALGORITHM_KEY, DEFAULT_ALGORITHM)
+        // A NetHSM unreachable at save time must not block saving the component.
+        val matches = runCatching {
+            discovery?.keys(prefix)
+                ?.filter { algorithm in NetHsmAlgorithms.supportedAlgorithms(it) }
+                ?.map { it.id }
+                ?.sorted()
+                .orEmpty()
+        }.getOrDefault(emptyList())
+
+        if (matches.size > 1) {
+            log.warnf(
+                "prefix '%s' matches %d keys that can serve %s (%s); '%s' will sign and the rest " +
+                    "will only verify. Use one component per key generation, or make this one passive.",
+                prefix, matches.size, algorithm, matches.joinToString(", "), matches.first(),
+            )
         }
     }
 

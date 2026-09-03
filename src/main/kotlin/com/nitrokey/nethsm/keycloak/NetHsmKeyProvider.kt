@@ -65,6 +65,10 @@ class NetHsmKeyProvider(
 
         return discovery.keys(prefix)
             .filter { algorithm in algorithmsOf(it) }
+            // Explicit, because it decides which key signs. Keycloak takes the first key
+            // a provider yields, so relying on NetHSM's response order would make the
+            // choice an accident of the API rather than a property of this extension.
+            .sortedBy { it.id }
             .map { key ->
                 NetHsmKeyWrapper(key.id, client).apply {
                     providerId = model.id

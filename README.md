@@ -137,6 +137,38 @@ library against the realm JWKS: RS256, RS384, PS256, ES256, ES384, ES512, EdDSA.
 RS512, PS384 and PS512 share a code path with a verified sibling and differ only by a
 hash constant, which is covered by unit tests.
 
+## Key rotation
+
+Keycloak signs with the **first** key a provider yields, and this extension orders
+discovered keys by id. A component matching several keys is therefore not a rotation
+mechanism: adding a second key under a shared prefix publishes it, but signing stays with
+whichever id sorts first. The provider logs a warning when an active signing component
+matches more than one key, naming the one that will sign.
+
+Rotate with **one component per key generation** instead:
+
+1. Generate the new key in NetHSM under a new id, e.g. `kc-rsa-2026b` alongside
+   `kc-rsa-2026a`.
+2. Add a second `nethsm` component for the new id at a **higher priority**, active. It
+   takes over signing immediately, and the new `kid` appears in the JWKS at the same time.
+3. Flip the old component to **passive** — *Active* off, *Enabled* on. Its key stays in
+   the JWKS, so tokens signed before the cutover keep verifying, but it no longer signs.
+4. Once every token signed by the old key has expired, disable or delete the old
+   component, and only then remove the key from NetHSM.
+
+Two timing details worth planning around:
+
+- A key generated in NetHSM does not appear until the discovery cache expires, up to
+  `discovery-cache-seconds` (default 300).
+- Relying parties cache the JWKS. Step 3 is what stops that mattering: the old key is
+  still published, so a client that has not re-fetched can still verify. Do not merge
+  steps 2 and 4 into one change.
+
+Because `kid` is the NetHSM key id, it changes at step 2, which is the signal for a
+relying party to re-fetch. Reusing an id for a new key would defeat that, so generate a
+new id rather than replacing a key in place — which is easiest if production ids carry a
+generation marker from the start, such as `kc-rsa-2026a`.
+
 ## Failure behaviour
 
 An unreachable NetHSM must not quietly become "this realm has no keys", because that is
@@ -293,6 +325,9 @@ recreated, so re-run it after each `up --build`.
 | `kc-ec-p384` | EC_P384 | `ECDSA_Signature` | ES384 |
 | `kc-ec-p521` | EC_P521 | `ECDSA_Signature` | ES512 |
 | `kc-ed25519` | Curve25519 | `EdDSA_Signature` | EdDSA |
+
+These are named by mechanism because they exist to exercise algorithms; `kc-rot-2026a`
+and `kc-rot-2026b` show the generation naming that [rotation](#key-rotation) wants.
 
 `register-provider.sh` defaults to RS256; override to register any other algorithm:
 

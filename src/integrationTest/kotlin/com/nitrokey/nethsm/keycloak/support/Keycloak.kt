@@ -124,6 +124,23 @@ class Keycloak(private val baseUrl: String = BASE_URL) {
         )
     }
 
+    fun componentId(realm: String, name: String, token: String = adminToken()): String =
+        Json.read(admin("GET", "/admin/realms/$realm/components?type=org.keycloak.keys.KeyProvider", token).body())
+            .first { it.path("name").asText() == name }
+            .path("id").asText()
+
+    /** Flips a component to passive: still published for verification, no longer signing. */
+    fun makePassive(realm: String, name: String, keyPrefix: String, algorithm: String, priority: Int, token: String = adminToken()) {
+        val id = componentId(realm, name, token)
+        admin(
+            "PUT", "/admin/realms/$realm/components/$id", token,
+            """{"id":"$id","name":"$name","providerId":"nethsm",
+                "providerType":"org.keycloak.keys.KeyProvider",
+                "config":{"priority":["$priority"],"enabled":["true"],"active":["false"],
+                          "keyUse":["sig"],"keyPrefix":["$keyPrefix"],"algorithm":["$algorithm"]}}""",
+        )
+    }
+
     fun realmKeys(realm: String, token: String = adminToken()): HttpResponse<String> =
         admin("GET", "/admin/realms/$realm/keys", token, expectSuccess = false)
 
