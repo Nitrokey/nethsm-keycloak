@@ -90,7 +90,7 @@ class NetHsmConfig(
 
         /**
          * Returns null when no `url` is configured, which is the normal state for a
-         * Keycloak that has the jar deployed but no NetHSM. The factory then stays
+         * Keycloak that has the JAR file deployed but no NetHSM. The factory then stays
          * registered but inert rather than failing startup.
          */
         fun from(scope: Config.Scope): NetHsmConfig? {

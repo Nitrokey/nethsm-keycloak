@@ -54,7 +54,7 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
 
         val config = NetHsmConfig.from(scope)
         if (config == null) {
-            // Normal when the jar is deployed but this server has no NetHSM: stay
+            // Normal when the JAR file is deployed but this server has no NetHSM: stay
             // registered but inert rather than failing startup.
             log.debug("no spi-keys--nethsm--url configured; NetHSM key provider is inactive")
             return

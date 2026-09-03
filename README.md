@@ -1,24 +1,40 @@
 # Keycloak Provider for NetHSM
 
-A Keycloak key provider that natively integrates with [Nitrokey NetHSM](https://www.nitrokey.com/products/nethsm)
-to perform key operations (e.g. signing) while private keys never leave the HSM.
-
-Status: **signing and JWE decryption both working end to end.** Keycloak access
-tokens signed inside the HSM verify against the realm's published JWKS for RSA, ECDSA and
-Ed25519, and an encrypted request object is decrypted with an HSM-held RSA key. The
-connection is pooled and certificate-pinned, and an unreachable NetHSM fails closed
-rather than letting Keycloak fall back to a software key.
+A [Keycloak](https://www.keycloak.org/) key provider that natively integrates with
+[Nitrokey NetHSM](https://www.nitrokey.com/products/nethsm) to perform key operations
+(e.g. signing) while private keys never leave the HSM.
 
 ## Quality Warning
 
-**This project has been developed and reviewed entirely by an AI. It has been tested successfully
+**This Keycloak provider has been developed and reviewed entirely by an AI. It has been tested successfully
 by unit tests and integration tests. The code has not been reviewed by a human yet and therefore
 use it at your own risk.**
+
+## Features
+
+- Signing of access tokens
+- JCA provider to decrypt inbound JWE
+- Ciphers: RSA 2048 (PKCS#1, PSS, OAEP), P256, P384, P521, Curve25519
+- Supports multiple NetHSM in a round-robin fashion
+- Uses Keycloak's SPI and NetHSM's REST API (without PKCS#11)
+
+## Installation and Setup
+
+Follow the [documentation](https://docs.nitrokey.com/nethsm/compatible/keycloak).
+
+### Keycloak compatibility
+
+| Extension | Keycloak |
+|---|---|
+| 0.1.x | 26.7.x |
+
+The extension implements Keycloak SPIs that Keycloak itself marks internal and thus
+could change over different versions.
 
 ## Configuration
 
 Two layers. The connection and the Operator credential are server-wide, ops-owned and
-secret; each realm only says which key ids it claims.
+secret; each realm only says which key IDs it claims.
 
 ### Server (`conf/keycloak.conf`, or `KC_SPI_KEYS__NETHSM__*`)
 
@@ -26,7 +42,7 @@ secret; each realm only says which key ids it claims.
 |---|---|---|
 | `spi-keys--nethsm--url` | — | API base including `/api/v1`. Comma-separated for a cluster; tried round-robin |
 | `spi-keys--nethsm--username` | — | NetHSM user with the **Operator** role |
-| `spi-keys--nethsm--passphrase` | — | min 10 characters |
+| `spi-keys--nethsm--passphrase` | — | User's passphrase |
 | `spi-keys--nethsm--tls-fingerprints` | — | comma-separated SHA-256 certificate pins |
 | `spi-keys--nethsm--tls-insecure` | `false` | disables verification; development only |
 | `spi-keys--nethsm--timeout-seconds` | `10` | per request, once connected |
@@ -38,7 +54,7 @@ secret; each realm only says which key ids it claims.
 | `spi-keys--nethsm--discovery-max-stale-seconds` | `86400` | how long cached keys may keep being served once refreshes fail |
 | `spi-keys--nethsm--on-unavailable` | `fail` | `fail` or `degrade` — see [Failure behaviour](#failure-behaviour) |
 
-Omitting `url` leaves the provider registered but inert, so the jar is safe to ship in an
+Omitting `url` leaves the provider registered but inert, so the JAR file is safe to ship in an
 image that has no NetHSM.
 
 An **Operator** credential is all this needs: the key operations Keycloak performs work
@@ -46,12 +62,12 @@ with it, and generating keys happens out of band. Nothing here checks the role, 
 Administrator out of the server configuration is least privilege to apply rather than a
 guarantee this extension enforces.
 
-Pinning replaces hostname verification, because a pinned NetHSM certificate is usually
+Certificate pinning replaces hostname verification, because a pinned NetHSM certificate is usually
 self-signed with a CN that does not match the address Keycloak uses. Get the fingerprint
 with:
 
 ```bash
-echo | openssl s_client -connect nethsm:8443 2>/dev/null \
+echo | openssl s_client -connect <HOST>:<PORT> 2>/dev/null \
   | openssl x509 -fingerprint -sha256 -noout
 ```
 
@@ -63,19 +79,18 @@ names the fingerprint it actually saw, which is the value to pin.
 | Setting | Meaning |
 |---|---|
 | Key use | `sig` to sign tokens, `enc` to decrypt inbound JWE |
-| Key ID prefix | every NetHSM key whose id starts with this is published by this realm |
+| Key ID prefix | every NetHSM key whose ID starts with this is published by this realm |
 | Algorithm | which algorithm the keys are published under |
 | Priority / Enabled / Active | standard Keycloak key provider settings |
 
 One component means one algorithm, mirroring Keycloak's own providers. A NetHSM
-`RSA_Signature_PKCS1` key is hash-agnostic and can serve RS256, RS384 or RS512, so the
-choice is made here; a PSS key only appears under the algorithm its mechanism names.
-Keys that cannot serve the chosen algorithm are skipped, so pointing a prefix at a mixed
-set is fine.
+`RSA_Signature_PKCS1` key is hash-agnostic and can serve RS256, RS384 or RS512.
+A PSS key only appears under the algorithm its mechanism names. Keys that cannot serve
+the chosen algorithm are skipped, so pointing a prefix at a mixed set is fine.
 
-`kid` is the NetHSM key id: stable across restarts and cluster nodes, which a generated
-id could not be under auto-discovery. Do not point two components at the same key with
-different algorithms — they would publish two JWKS entries under one `kid`.
+`kid` is the NetHSM key ID: stable across restarts and cluster nodes. Do not point two
+components at the same key with different algorithms — they would publish two JWKS entries
+under one `kid`.
 
 ## Algorithm mapping
 
@@ -117,23 +132,9 @@ it is a ceiling, not fairness between decrypting and signing. Do not enable requ
 encryption on a client unless it is needed, and rate-limit the authorization endpoint at
 the proxy if it is exposed publicly.
 
-#### Why this goes through JCA rather than a Keycloak SPI
-
-Keycloak consults its `CekManagementProvider` SPI only when it *encrypts*. Inbound JWE is
-decrypted by `DefaultRsaKeyEncryptionJWEAlgorithmProvider`, which does a plain
-`Cipher.getInstance(transformation).init(DECRYPT_MODE, key)` — the SPI is never asked. An
-earlier attempt to shadow that SPI registered correctly and won its slot, and still never
-ran on the path that mattered.
-
-So the extension registers a JCA provider instead. JCA defers `Cipher` provider selection
-until `init` and skips providers that reject the key, so one that accepts the opaque
-NetHSM key handle is chosen with no change to Keycloak. It is appended last and declares
-`SupportedKeyClasses`, so ordinary RSA keys never reach it and keep using the platform
-implementation. PKCS#1 v1.5 padding is refused, for the reason above.
-
 ### Verified
 
-Verified end to end against a real NetHSM, each token checked with an independent
+Verified end to end against a NetHSM container, each token checked with an independent
 library against the realm JWKS: RS256, RS384, PS256, ES256, ES384, ES512, EdDSA.
 RS512, PS384 and PS512 share a code path with a verified sibling and differ only by a
 hash constant, which is covered by unit tests.
@@ -141,16 +142,16 @@ hash constant, which is covered by unit tests.
 ## Key rotation
 
 Keycloak signs with the **first** key a provider yields, and this extension orders
-discovered keys by id. A component matching several keys is therefore not a rotation
+discovered keys by ID. A component matching several keys is therefore not a rotation
 mechanism: adding a second key under a shared prefix publishes it, but signing stays with
-whichever id sorts first. The provider logs a warning when an active signing component
+whichever ID sorts first. The provider logs a warning when an active signing component
 matches more than one key, naming the one that will sign.
 
 Rotate with **one component per key generation** instead:
 
-1. Generate the new key in NetHSM under a new id, e.g. `kc-rsa-2026b` alongside
-   `kc-rsa-2026a`.
-2. Add a second `nethsm` component for the new id at a **higher priority**, active. It
+1. Generate the new key in NetHSM under a new ID, e.g. `kc-rsa-2026b` alongside
+   `kc-rsa-2026a`. This is done by interacting with NetHSM directly, outside of Keycloak.
+2. Add a second `nethsm` component for the new ID at a **higher priority**, active. It
    takes over signing immediately, and the new `kid` appears in the JWKS at the same time.
 3. Flip the old component to **passive** — *Active* off, *Enabled* on. Its key stays in
    the JWKS, so tokens signed before the cutover keep verifying, but it no longer signs.
@@ -165,10 +166,9 @@ Two timing details worth planning around:
   still published, so a client that has not re-fetched can still verify. Do not merge
   steps 2 and 4 into one change.
 
-Because `kid` is the NetHSM key id, it changes at step 2, which is the signal for a
-relying party to re-fetch. Reusing an id for a new key would defeat that, so generate a
-new id rather than replacing a key in place — which is easiest if production ids carry a
-generation marker from the start, such as `kc-rsa-2026a`.
+Because `kid` is the NetHSM key ID, it changes at step 2, which is the signal for a
+relying party to re-fetch. Reusing an ID for a new key would defeat that, so generate a
+new ID rather than replacing a key in place.
 
 ## Failure behaviour
 
@@ -188,9 +188,6 @@ So the provider fails closed by default, in three layers:
 | NetHSM unreachable, nothing cached (cold start) | `on-unavailable=fail` (default): propagates the error, so no fallback key is generated |
 | | `on-unavailable=degrade`: contributes no keys and lets Keycloak generate a software key |
 
-Verified: with NetHSM stopped and a cold cache, the realm keys endpoint returns 500, the
-log says `nothing is cached; failing closed`, and **no software key is generated**.
-
 Failing closed has an operational edge worth planning for. **If a realm's default
 signature algorithm is served by NetHSM keys and NetHSM goes away, nobody can obtain an
 admin token for that realm either** — including you, to fix it. Recovery is through
@@ -198,18 +195,13 @@ server configuration rather than the admin API: set
 `spi-keys--nethsm--on-unavailable=degrade` and restart, or disable the component. Keeping
 the `master` realm on non-HSM keys avoids the situation entirely.
 
-### A misconfigured prefix does not fail
+## Disabling software keys
 
-`on-unavailable` only covers NetHSM being *unreachable*. A key prefix that matches
-nothing is not a failure: discovery succeeds and returns an empty set, this provider
-contributes no keys, and Keycloak signs with the `rsa-generated` key that every realm has
-by default. Tokens keep being issued, from a software key, with no error anywhere. A
-typo in the prefix is enough.
-
-The same applies to an `enc` component: `rsa-enc-generated` is present by default too.
-
-Removing the generated providers is therefore worth doing for its own sake, not only as
-defence against an outage. A realm with no usable HSM key then errors instead of quietly
+In case of a misconfigured key prefix that matches nothing the discovery would succeed and
+return an empty set. This provider contributes no keys, and Keycloak signs with the
+`rsa-generated` software key that every realm has by default. Similarly, for encryption
+`rsa-enc-generated` is present by default. Therefore it is recommended to remove the
+generated providers so that in case of no usable HSM key it would error instead of quietly
 substituting one:
 
 ```
@@ -219,28 +211,13 @@ spi-keys--rsa-enc-generated--enabled=false
 ```
 
 Alternatively delete those providers from the realm, and check the published `kid` after
-any key change: it should be the NetHSM key id.
-
-## Disabling software keys
-
-Keycloak offers algorithms that a NetHSM-backed key cannot serve. A realm can still use
-them, but only with Keycloak's own software keys — this extension will not publish a key
-under any of them.
-
-| Algorithm | Why not |
-|---|---|
-| `HS256` / `HS384` / `HS512` | HMAC over a shared secret. NetHSM stores AES keys but exposes no HMAC operation, and a symmetric realm key has no HSM story worth having. |
-| `ECDH-ES`, `ECDH-ES+A128KW`, `+A192KW`, `+A256KW` | Require an ECDH key-agreement (derive) operation. NetHSM has none, so these can never be HSM-backed. |
-| `RSA1_5` | NetHSM could do it (`RSA_Decryption_PKCS1`), but it is deliberately excluded: PKCS#1 v1.5 decryption of attacker-supplied ciphertext is the classic Bleichenbacher oracle, and the ciphertext here arrives from unauthenticated callers. |
-| `A128KW`, `A192KW`, `A256KW` | Symmetric key wrapping. Same reason as `HS*`. |
-| `ML-DSA-44/65/87` | Post-quantum signatures. No NetHSM mechanism. |
-| Brainpool curves, `EC_P256K1` | NetHSM supports these key types, but JOSE defines no `alg` for them. |
-
-NetHSM's `BIP340_Signature` (Schnorr) and its AES-CBC encrypt/decrypt likewise have no
-JOSE equivalent and are out of scope.
+any key change: it should be the NetHSM key ID.
 
 ## Known limitations
 
+- Unsupported ciphers: `HS256`, `HS384`, `HS512`, `ECDH-ES`, `ECDH-ES+A128KW`, `+A192KW`,
+  `+A256KW`, `RSA1_5` (deliberately excluded to avoid Bleichenbacher oracle attacks),
+  `A128KW`, `A192KW`, `A256KW`, `ML-DSA-44/65/87`, Brainpool curves, `EC_P256K1`
 - **OID4VC credential issuance will not use the HSM.** `KeyWrapper.cloneKey()` hardcodes
   `new KeyWrapper()` and so erases the `HsmKeyWrapper` subtype that dispatch relies on.
   In Keycloak 26.7.3 its only caller is
@@ -273,29 +250,24 @@ Three layers, and the distinction matters:
 | `src/integrationTest/…IT` | **Keycloak** — its token, JWKS and admin endpoints | yes |
 | `NetHsmContractIT` | **NetHSM** — the one assumption the RSA path rests on | yes |
 
-The end-to-end tests are not tests *of* NetHSM. They ask Keycloak for a token and check
-that it carries the NetHSM `kid` and verifies against the realm's published JWKS, which
-is exactly what a relying party does. NetHSM is a fixture the compose stack provides.
+The end-to-end tests ask Keycloak for a token and check that it carries the NetHSM `kid`
+and verifies against the realm's published JWKS, which is exactly what a relying party
+does. NetHSM is a fixture the compose stack provides.
 
 The exception is `NetHsmContractIT`, which pins the one NetHSM behaviour everything else
 assumes: that `PKCS1` mode signs submitted bytes verbatim, so a DigestInfo-prefixed
 digest yields an EMSA-PKCS1-v1_5 signature. If firmware ever changed that, this fails
 with an obvious cause instead of every RS\* case failing in a way that looks like our bug.
 
-`integrationTest` is not part of `check`, because each run pays for an image build and
-`kc.sh build`. It is also never up to date: what it exercises lives in containers Gradle
-cannot see, so unchanged sources say nothing about whether it would still pass.
+`integrationTest` is not part of `check`, because each run includes time-consuming image
+build and `kc.sh build`.
 
 If you run Gradle itself inside a container against the host's Docker daemon, mount the
 project at its real host path. Compose resolves bind mounts on the daemon side, so a
 mismatch makes `provision.sh` mount as an empty directory, the provision step exit 0
 having done nothing, and every test then find an unprovisioned NetHSM.
 
-`build/providers/` holds the deployable set: the provider .jar file plus `kotlin-stdlib`.
-Keycloak uses a single unrestricted classloader and gives `providers/` precedence over
-its own libraries, so keep that directory minimal and keep every `org.keycloak:*`
-dependency `compileOnly` — shading Keycloak classes into the jar is what produces
-`ServiceConfigurationError: <Spi> not a subtype` at startup.
+`build/providers/` holds a user-deployable JAR file.
 
 ## Testing
 
@@ -318,7 +290,7 @@ recreated, so re-run it after each `up --build`.
 
 `docker/nethsm/provision.sh` generates one key per NetHSM mode Keycloak needs:
 
-| Key id | NetHSM type | Mechanism | For |
+| Key ID | NetHSM type | Mechanism | For |
 |---|---|---|---|
 | `kc-rsa-pkcs1` | RSA 2048 | `RSA_Signature_PKCS1` | RS256/384/512 |
 | `kc-rsa-pss` | RSA 2048 | `RSA_Signature_PSS_SHA*` | PS256/384/512 |

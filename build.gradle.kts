@@ -1,5 +1,6 @@
 plugins {
     kotlin("jvm") version "2.4.10"
+    id("com.gradleup.shadow") version "9.6.1"
 }
 
 val keycloakVersion = project.property("keycloakVersion") as String
@@ -34,7 +35,7 @@ configurations["integrationTestRuntimeOnly"].extendsFrom(configurations["testRun
 
 dependencies {
     // Keycloak is on the server classpath at runtime. Everything Keycloak ships
-    // MUST be compileOnly -- shading org.keycloak.* classes into the provider jar
+    // MUST be compileOnly -- shading org.keycloak.* classes into the provider JAR file
     // is what produces "ServiceConfigurationError: <Spi> not a subtype" at startup.
     compileOnly("org.keycloak:keycloak-server-spi:$keycloakVersion")
     compileOnly("org.keycloak:keycloak-server-spi-private:$keycloakVersion")
@@ -68,22 +69,41 @@ tasks.test {
 }
 
 /**
- * kotlin-stdlib is the extension's only runtime dependency that Keycloak does not
- * already ship. Keycloak uses a single unrestricted classloader and gives
- * providers/ precedence over built-in libraries, so a bare stdlib jar dropped in
- * providers/ becomes global. That is fine when you own the whole image (what
- * docker/ does) and a hazard when shipping to third parties who may deploy another
- * Kotlin provider at a different version.
+ * The distributed artifact: one JAR file to drop in /opt/keycloak/providers.
  *
- * `collectRuntimeJars` produces the deployable set for the own-the-image case.
- * For third-party distribution, add com.gradleup.shadow and relocate `kotlin.**`
- * -- and nothing else.
+ * kotlin-stdlib is the only runtime dependency Keycloak does not already ship, and it is
+ * relocated rather than shipped beside us. Keycloak uses a single unrestricted
+ * classloader and gives providers/ precedence over its own libraries, so a bare stdlib
+ * JAR file there is global -- another Kotlin provider at a different version and one of them
+ * silently wins.
+ *
+ * Kotlin is relocated and nothing else. Shading org.keycloak is what produces
+ * "ServiceConfigurationError: <Spi> not a subtype" at startup; Keycloak and Apache
+ * HttpClient are compileOnly and must stay out of the JAR file entirely.
+ */
+tasks.shadowJar {
+    archiveClassifier = ""
+    relocate("kotlin", "com.nitrokey.nethsm.keycloak.shaded.kotlin")
+    relocate("org.jetbrains.annotations", "com.nitrokey.nethsm.keycloak.shaded.annotations")
+    // Kotlin's module metadata refers to the original package names and is only used by
+    // the Kotlin compiler, which never consumes this JAR file.
+    exclude("META-INF/*.kotlin_module")
+    exclude("META-INF/maven/**")
+    mergeServiceFiles()
+}
+
+// The plain JAR file would collide with the shaded one now that it has no classifier, and
+// nothing consumes it.
+tasks.jar { enabled = false }
+
+/**
+ * Stages exactly what a user deploys, so the testbed and CI exercise the released
+ * artifact rather than a differently-assembled one.
  */
 val collectRuntimeJars = tasks.register<Sync>("collectRuntimeJars") {
-    description = "Stages the provider jar + kotlin-stdlib for /opt/keycloak/providers"
+    description = "Stages the shaded provider JAR file for /opt/keycloak/providers"
     group = "distribution"
-    from(tasks.jar)
-    from(configurations.runtimeClasspath)
+    from(tasks.shadowJar)
     into(layout.buildDirectory.dir("providers"))
 }
 
