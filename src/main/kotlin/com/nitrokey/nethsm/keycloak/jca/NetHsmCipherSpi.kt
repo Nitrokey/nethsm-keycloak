@@ -8,6 +8,7 @@ import java.io.ByteArrayOutputStream
 import java.security.AlgorithmParameters
 import java.security.InvalidAlgorithmParameterException
 import java.security.InvalidKeyException
+import java.security.NoSuchAlgorithmException
 import java.security.Key
 import java.security.SecureRandom
 import java.security.spec.AlgorithmParameterSpec
@@ -16,6 +17,7 @@ import javax.crypto.BadPaddingException
 import javax.crypto.Cipher
 import javax.crypto.CipherSpi
 import javax.crypto.NoSuchPaddingException
+import javax.crypto.ShortBufferException
 import javax.crypto.spec.OAEPParameterSpec
 
 /**
@@ -63,9 +65,18 @@ class NetHsmCipherSpi : CipherSpi() {
     }
 
     override fun engineInit(opmode: Int, key: Key, random: SecureRandom?) {
-        if (opmode != Cipher.DECRYPT_MODE && opmode != Cipher.UNWRAP_MODE) {
-            // Encryption uses a public key and has no business reaching the HSM.
-            throw InvalidKeyException("NetHSM keys can only decrypt or unwrap")
+        // Dropped first: a failed init must leave nothing usable behind. JCA lets a
+        // Cipher be re-inited, so keeping the previous key would let a doFinal after a
+        // rejected init decrypt under the key the caller thought it had replaced.
+        handle = null
+        decryptor = null
+        buffer.reset()
+
+        // Only DECRYPT_MODE: encryption uses a public key and has no business reaching
+        // the HSM, and UNWRAP_MODE would need engineUnwrap, which is not implemented --
+        // accepting a mode that cannot be serviced only defers the failure.
+        if (opmode != Cipher.DECRYPT_MODE) {
+            throw InvalidKeyException("NetHSM keys can only be used to decrypt")
         }
         val netHsmKey = key as? NetHsmPrivateKeyHandle
             // Not an error: this is how JCA is told to try the next provider.
@@ -127,12 +138,15 @@ class NetHsmCipherSpi : CipherSpi() {
         if (input != null && len > 0) buffer.write(input, offset, len)
 
         val key = handle ?: throw IllegalStateException("cipher not initialised")
+        val hsm = decryptor ?: throw IllegalStateException("cipher not initialised")
         val mode = decryptMode ?: throw IllegalStateException("padding not set")
         val ciphertext = buffer.toByteArray()
         buffer.reset()
 
+        // Resolved outside the try so a defect here surfaces as itself rather than being
+        // laundered into a padding failure.
         return try {
-            decryptor!!.decryptCek(key.keyId, mode, ciphertext)
+            hsm.decryptCek(key.keyId, mode, ciphertext)
         } catch (e: Exception) {
             // The uniformity is owed to the caller, not to the log: without a record
             // here, an unreachable NetHSM is indistinguishable from a malformed JWE in
@@ -164,19 +178,21 @@ class NetHsmCipherSpi : CipherSpi() {
         outputOffset: Int,
     ): Int {
         val plaintext = engineDoFinal(input, offset, len)
+        if (output.size - outputOffset < plaintext.size) {
+            throw ShortBufferException("need ${plaintext.size} bytes, have ${output.size - outputOffset}")
+        }
         plaintext.copyInto(output, outputOffset)
         return plaintext.size
     }
 
     override fun engineGetBlockSize(): Int = 0
 
+    /** RSA plaintext is never longer than the ciphertext block, so this is a safe bound. */
     override fun engineGetOutputSize(inputLen: Int): Int = inputLen
 
     override fun engineGetIV(): ByteArray? = null
 
     override fun engineGetParameters(): AlgorithmParameters? = null
-
-    private class NoSuchAlgorithmException(message: String) : java.security.NoSuchAlgorithmException(message)
 
     private companion object {
         private val log = Logger.getLogger(NetHsmCipherSpi::class.java)

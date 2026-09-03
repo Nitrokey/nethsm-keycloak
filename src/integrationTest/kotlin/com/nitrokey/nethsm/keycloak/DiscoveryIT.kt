@@ -1,6 +1,7 @@
 package com.nitrokey.nethsm.keycloak
 
 import com.nitrokey.nethsm.keycloak.support.Json
+import com.nitrokey.nethsm.keycloak.support.Jws
 import com.nitrokey.nethsm.keycloak.support.Keycloak
 import com.nitrokey.nethsm.keycloak.support.NetHsm
 import org.junit.jupiter.api.AfterAll
@@ -62,6 +63,33 @@ class DiscoveryIT {
         assertTrue(
             kidsFor("ES512").none { it.startsWith("kc-") },
             "no NetHSM key should be published for an unmatched prefix",
+        )
+    }
+
+    /**
+     * A misconfigured prefix is not an error anywhere: discovery succeeds and simply
+     * matches nothing, so Keycloak falls back to the generated key every realm has by
+     * default and keeps issuing tokens signed outside the HSM.
+     *
+     * Unlike an unreachable NetHSM, `on-unavailable=fail` does not cover this, because
+     * nothing failed. Realms that must be HSM-only have to remove the generated
+     * providers; see the README.
+     */
+    @Test
+    fun `a prefix that matches nothing silently leaves signing to the generated key`() {
+        keycloak.registerNetHsmProvider(
+            realm, "nethsm-typo", keyPrefix = "kc-rsa-pkcs1-typo", algorithm = "RS256", priority = 400,
+        )
+        keycloak.setDefaultSignatureAlgorithm(realm, "RS256")
+
+        val response = keycloak.serviceAccountToken(realm)
+        assertEquals(200, response.statusCode(), "a typo must not break token issuance either")
+
+        val token = Json.read(response.body()).path("access_token").asText()
+        val kid = Jws.decodeHeader(token).path("kid").asText()
+        assertTrue(
+            !kid.startsWith("kc-"),
+            "expected Keycloak's generated key, so the hazard is real; got $kid",
         )
     }
 

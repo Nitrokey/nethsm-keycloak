@@ -107,6 +107,15 @@ A decrypt failure is reported without a reason. The ciphertext arrives from
 unauthenticated callers, so distinguishing a padding failure from any other failure would
 turn this into a usable RSA decryption oracle.
 
+#### Availability
+
+Accepting encrypted request objects lets any caller drive HSM operations before
+authenticating. NetHSM is shared with token signing, so a flood of decrypts competes with
+it; `max-connections` bounds how much of the HSM this extension will consume at once, but
+it is a ceiling, not fairness between decrypting and signing. Do not enable request-object
+encryption on a client unless it is needed, and rate-limit the authorization endpoint at
+the proxy if it is exposed publicly.
+
 #### Why this goes through JCA rather than a Keycloak SPI
 
 Keycloak consults its `CekManagementProvider` SPI only when it *encrypts*. Inbound JWE is
@@ -155,13 +164,28 @@ server configuration rather than the admin API: set
 `spi-keys--nethsm--on-unavailable=degrade` and restart, or disable the component. Keeping
 the `master` realm on non-HSM keys avoids the situation entirely.
 
-As defence in depth, the fallback can be removed altogether by disabling the generated
-key providers, so that a realm with no HSM keys errors instead of inventing one:
+### A misconfigured prefix does not fail
+
+`on-unavailable` only covers NetHSM being *unreachable*. A key prefix that matches
+nothing is not a failure: discovery succeeds and returns an empty set, this provider
+contributes no keys, and Keycloak signs with the `rsa-generated` key that every realm has
+by default. Tokens keep being issued, from a software key, with no error anywhere. A
+typo in the prefix is enough.
+
+The same applies to an `enc` component: `rsa-enc-generated` is present by default too.
+
+Removing the generated providers is therefore worth doing for its own sake, not only as
+defence against an outage. A realm with no usable HSM key then errors instead of quietly
+substituting one:
 
 ```
 spi-keys--rsa-generated--enabled=false
 spi-keys--ec-generated--enabled=false
+spi-keys--rsa-enc-generated--enabled=false
 ```
+
+Alternatively delete those providers from the realm, and check the published `kid` after
+any key change: it should be the NetHSM key id.
 
 ## Disabling software keys
 
