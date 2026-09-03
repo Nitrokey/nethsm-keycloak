@@ -126,6 +126,24 @@ spi-keys--rsa-generated--enabled=false
 spi-keys--ec-generated--enabled=false
 ```
 
+## Disabling software keys
+
+Keycloak offers algorithms that a NetHSM-backed key cannot serve. A realm can still use
+them, but only with Keycloak's own software keys — this extension will not publish a key
+under any of them.
+
+| Algorithm | Why not |
+|---|---|
+| `HS256` / `HS384` / `HS512` | HMAC over a shared secret. NetHSM stores AES keys but exposes no HMAC operation, and a symmetric realm key has no HSM story worth having. |
+| `ECDH-ES`, `ECDH-ES+A128KW`, `+A192KW`, `+A256KW` | Require an ECDH key-agreement (derive) operation. NetHSM has none, so these can never be HSM-backed. |
+| `RSA1_5` | NetHSM could do it (`RSA_Decryption_PKCS1`), but it is deliberately excluded: PKCS#1 v1.5 decryption of attacker-supplied ciphertext is the classic Bleichenbacher oracle, and the ciphertext here arrives from unauthenticated callers. |
+| `RSA-OAEP`, `RSA-OAEP-256` | Supported by NetHSM and planned, but not implemented yet — see [Known limitations](#known-limitations). |
+| `ML-DSA-44/65/87` | Post-quantum signatures. No NetHSM mechanism. |
+| Brainpool curves, `EC_P256K1` | NetHSM supports these key types, but JOSE defines no `alg` for them. |
+
+NetHSM's `BIP340_Signature` (Schnorr) and its AES-CBC encrypt/decrypt likewise have no
+JOSE equivalent and are out of scope.
+
 ## Known limitations
 
 - **Signing only.** The framework abstracts `SignatureProvider`, not

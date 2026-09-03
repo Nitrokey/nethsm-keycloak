@@ -89,6 +89,14 @@ object NetHsmAlgorithms {
         else -> emptySet()
     }
 
+    /** The JCA algorithm name for a NetHSM key type, used to label opaque key handles. */
+    fun jcaAlgorithmFor(type: String): String = when {
+        type == "RSA" -> "RSA"
+        type == "Curve25519" -> Algorithm.Ed25519
+        type in EC_TYPE_TO_ALGORITHM -> "EC"
+        else -> throw UnsupportedOperationException("no JCA algorithm for NetHSM key type $type")
+    }
+
     /** The `crv` for a NetHSM key type, or null for RSA. */
     fun curveFor(type: String): String? = TYPE_TO_CURVE[type]
 

@@ -58,6 +58,10 @@ class NetHsmKeyProvider(
                     this.algorithm = this@NetHsmKeyProvider.algorithm
                     this.status = this@NetHsmKeyProvider.status
                     publicKey = key.publicKey
+                    // Opaque handle, not key material. Keycloak's encryption SPI only
+                    // ever sees a java.security.Key, so this is how a CEK provider can
+                    // tell that an unwrap belongs to the HSM. See NetHsmPrivateKeyHandle.
+                    privateKey = NetHsmPrivateKeyHandle(key.id, NetHsmAlgorithms.jcaAlgorithmFor(key.type))
                 }
             }
             .stream()
