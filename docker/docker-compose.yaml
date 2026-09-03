@@ -10,8 +10,12 @@ services:
       - "8443:8443"
     environment:
       DEBUG_LOG: "1"
-    # No volume: every `up` starts from factory state so the fixture is reproducible.
-    # Add `- nethsm-data:/data` to persist keys across restarts.
+    # /data must be a volume, otherwise the test image loses provisioning on a container
+    # restart and comes back Unprovisioned -- which the fail-closed end-to-end test,
+    # which stops and starts this container, would then trip over. `compose down -v`
+    # removes the volume, so each run still begins from factory state.
+    volumes:
+      - nethsm-data:/data
     healthcheck:
       test: ["CMD-SHELL", "curl -sk -o /dev/null https://localhost:8443/api/v1/health/alive"]
       interval: 2s
@@ -50,6 +54,8 @@ services:
       # The test image serves a self-signed certificate. Production pins instead:
       # KC_SPI_KEYS__NETHSM__TLS_FINGERPRINTS: <sha256 of the NetHSM cert>
       KC_SPI_KEYS__NETHSM__TLS_INSECURE: "true"
+      # Short, so end-to-end tests observe key changes without waiting out the default.
+      KC_SPI_KEYS__NETHSM__DISCOVERY_CACHE_SECONDS: "5"
     ports:
       - "8080:8080"
     command: ["start-dev", "--log-level=info,com.nitrokey:debug"]

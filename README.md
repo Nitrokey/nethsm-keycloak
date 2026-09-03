@@ -150,8 +150,35 @@ spi-keys--ec-generated--enabled=false
 ## Build and test
 
 ```bash
-./gradlew build          # compiles, tests, stages build/providers/
+./gradlew build              # compiles, unit tests, stages build/providers/
+./gradlew integrationTest    # brings the testbed up, runs end-to-end tests, tears it down
 ```
+
+Three layers, and the distinction matters:
+
+| | Subject | Needs Docker |
+|---|---|---|
+| `src/test` | algorithm derivation, signature conversion, the fail-closed branches | no |
+| `src/integrationTest/…IT` | **Keycloak** — its token, JWKS and admin endpoints | yes |
+| `NetHsmContractIT` | **NetHSM** — the one assumption the RSA path rests on | yes |
+
+The end-to-end tests are not tests *of* NetHSM. They ask Keycloak for a token and check
+that it carries the NetHSM `kid` and verifies against the realm's published JWKS, which
+is exactly what a relying party does. NetHSM is a fixture the compose stack provides.
+
+The exception is `NetHsmContractIT`, which pins the one NetHSM behaviour everything else
+assumes: that `PKCS1` mode signs submitted bytes verbatim, so a DigestInfo-prefixed
+digest yields an EMSA-PKCS1-v1_5 signature. If firmware ever changed that, this fails
+with an obvious cause instead of every RS\* case failing in a way that looks like our bug.
+
+`integrationTest` is not part of `check`, because each run pays for an image build and
+`kc.sh build`. It is also never up to date: what it exercises lives in containers Gradle
+cannot see, so unchanged sources say nothing about whether it would still pass.
+
+If you run Gradle itself inside a container against the host's Docker daemon, mount the
+project at its real host path. Compose resolves bind mounts on the daemon side, so a
+mismatch makes `provision.sh` mount as an empty directory, the provision step exit 0
+having done nothing, and every test then find an unprovisioned NetHSM.
 
 `build/providers/` holds the deployable set: the provider .jar file plus `kotlin-stdlib`.
 Keycloak uses a single unrestricted classloader and gives `providers/` precedence over

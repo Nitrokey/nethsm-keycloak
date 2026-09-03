@@ -43,6 +43,12 @@ JSON
   *) echo "!! unexpected state '${state:-}'" >&2; exit 1 ;;
 esac
 
+# Without this a restarted NetHSM comes back Locked and needs the unlock passphrase.
+# The fail-closed end-to-end test stops and starts the container, so the fixture has to
+# return to Operational on its own. Appropriate for a disposable test container only.
+echo "==> enabling unattended boot"
+as_admin -X PUT "$NETHSM_URL/config/unattended-boot" -d '{"status":"on"}' || echo "   (already on)"
+
 echo "==> operator user '$OPERATOR_USER'"
 as_admin -X PUT "$NETHSM_URL/users/$OPERATOR_USER" -d "$(cat <<JSON
 {"realName":"Keycloak","role":"Operator","passphrase":"$OPERATOR_PASSPHRASE"}
