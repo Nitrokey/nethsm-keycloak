@@ -1,5 +1,6 @@
 package com.nitrokey.nethsm.keycloak
 
+import com.nitrokey.nethsm.keycloak.client.CekDecryptor
 import java.security.PrivateKey
 
 /**
@@ -14,10 +15,14 @@ import java.security.PrivateKey
  * handle is what lets [com.nitrokey.nethsm.keycloak.jca.NetHsmCipherSpi] recognise a
  * NetHSM key and route the unwrap to the HSM instead of trying to use material it does
  * not have.
+ *
+ * [decryptor] is the one operation the handle can perform, rather than the whole client,
+ * so holding a key does not confer the ability to sign or to read configuration.
  */
 class NetHsmPrivateKeyHandle(
     val keyId: String,
     private val jcaAlgorithm: String,
+    @Transient val decryptor: CekDecryptor? = null,
 ) : PrivateKey {
 
     override fun getAlgorithm(): String = jcaAlgorithm
@@ -25,7 +30,7 @@ class NetHsmPrivateKeyHandle(
     /** Null: there is no encoding, because the key cannot leave the HSM. */
     override fun getFormat(): String? = null
 
-    /** Null for the same reason. Callers that need material will fail loudly rather than silently use a placeholder. */
+    /** Null for the same reason. Callers needing material fail loudly rather than use a placeholder. */
     override fun getEncoded(): ByteArray? = null
 
     override fun toString(): String = "NetHsmPrivateKeyHandle(keyId=$keyId, algorithm=$jcaAlgorithm)"

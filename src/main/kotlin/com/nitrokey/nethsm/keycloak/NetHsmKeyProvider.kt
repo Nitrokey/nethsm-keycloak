@@ -36,6 +36,24 @@ class NetHsmKeyProvider(
     private val prefix = model.get(NetHsmKeyProviderFactory.KEY_PREFIX_KEY, "")
     private val algorithm = model.get(Attributes.ALGORITHM_KEY, NetHsmKeyProviderFactory.DEFAULT_ALGORITHM)
 
+    /**
+     * SIG keys sign tokens; ENC keys decrypt inbound JWE, which is the only encryption
+     * direction the HSM is involved in -- encrypting to a client uses that client's
+     * public key.
+     */
+    private val keyUse =
+        if (model.get(Attributes.KEY_USE, KeyUse.SIG.getSpecName()).equals(KeyUse.ENC.getSpecName(), ignoreCase = true)) {
+            KeyUse.ENC
+        } else {
+            KeyUse.SIG
+        }
+
+    /** Which algorithms a discovered key can serve depends on what this component is for. */
+    private fun algorithmsOf(key: com.nitrokey.nethsm.keycloak.client.NetHsmKey): Set<String> = when (keyUse) {
+        KeyUse.ENC -> NetHsmAlgorithms.supportedEncryptionAlgorithms(key)
+        else -> NetHsmAlgorithms.supportedAlgorithms(key)
+    }
+
     override fun getHsmKeysStream(): Stream<out HsmKeyWrapper> {
         if (discovery == null || client == null) {
             log.error(
@@ -46,13 +64,13 @@ class NetHsmKeyProvider(
         }
 
         return discovery.keys(prefix)
-            .filter { algorithm in NetHsmAlgorithms.supportedAlgorithms(it) }
+            .filter { algorithm in algorithmsOf(it) }
             .map { key ->
                 NetHsmKeyWrapper(key.id, client).apply {
                     providerId = model.id
                     providerPriority = priority
                     kid = key.id
-                    use = KeyUse.SIG
+                    use = keyUse
                     type = keyTypeForAlgorithm(this@NetHsmKeyProvider.algorithm)
                     curve = NetHsmAlgorithms.curveFor(key.type)
                     this.algorithm = this@NetHsmKeyProvider.algorithm
@@ -61,7 +79,7 @@ class NetHsmKeyProvider(
                     // Opaque handle, not key material. Keycloak's encryption SPI only
                     // ever sees a java.security.Key, so this is how a CEK provider can
                     // tell that an unwrap belongs to the HSM. See NetHsmPrivateKeyHandle.
-                    privateKey = NetHsmPrivateKeyHandle(key.id, NetHsmAlgorithms.jcaAlgorithmFor(key.type))
+                    privateKey = NetHsmPrivateKeyHandle(key.id, NetHsmAlgorithms.jcaAlgorithmFor(key.type), client)
                 }
             }
             .stream()

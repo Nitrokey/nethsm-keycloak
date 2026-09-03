@@ -2,6 +2,7 @@ package com.nitrokey.nethsm.keycloak.hsm
 
 import org.keycloak.crypto.Algorithm
 import org.keycloak.crypto.KeyType
+import org.keycloak.jose.jwe.JWEConstants
 
 /**
  * Maps a JOSE algorithm to the Keycloak [KeyType] that `SignatureProvider.checkKeyFor*`
@@ -20,6 +21,10 @@ internal fun keyTypeForAlgorithm(algorithm: String): String = when (algorithm) {
     Algorithm.ES256, Algorithm.ES384, Algorithm.ES512 -> KeyType.EC
 
     Algorithm.EdDSA, Algorithm.Ed25519, Algorithm.Ed448 -> KeyType.OKP
+
+    // Key management for JWE. RSA1_5 is listed so the mapping is total for anything
+    // Keycloak might hand us, not because this extension offers it.
+    JWEConstants.RSA_OAEP, JWEConstants.RSA_OAEP_256, JWEConstants.RSA1_5 -> KeyType.RSA
 
     else -> throw UnsupportedOperationException("$algorithm cannot be mapped to a Keycloak KeyType")
 }

@@ -45,7 +45,7 @@ class NetHsmRequestException(val status: Int, message: String) : RuntimeExceptio
  * pinning against a self-signed NetHSM certificate impossible without setting a
  * JVM-wide system property.
  */
-class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource {
+class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, CekDecryptor {
 
     private val log = Logger.getLogger(NetHsmClient::class.java)
     private val cursor = AtomicInteger(0)
@@ -103,6 +103,25 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource {
         val signature = request(post).path("signature").asText(null)
             ?: throw NetHsmRequestException(200, "sign response for '$id' had no signature")
         return Base64.getDecoder().decode(signature)
+    }
+
+    /**
+     * `POST /keys/{id}/decrypt`. Used to unwrap a JWE content encryption key.
+     *
+     * The ciphertext here comes from whoever posted the JWE, so this is an RSA
+     * decryption oracle by construction. Callers must not distinguish a padding failure
+     * from any other failure -- see NetHsmCipherSpi.
+     */
+    override fun decryptCek(keyId: String, mode: String, ciphertext: ByteArray): ByteArray {
+        val body = JsonSerialization.mapper.createObjectNode()
+            .put("mode", mode)
+            .put("encrypted", Base64.getEncoder().encodeToString(ciphertext))
+        val post = HttpPost("/keys/${encode(keyId)}/decrypt").apply {
+            entity = ByteArrayEntity(JsonSerialization.mapper.writeValueAsBytes(body), ContentType.APPLICATION_JSON)
+        }
+        val decrypted = request(post).path("decrypted").asText(null)
+            ?: throw NetHsmRequestException(200, "decrypt response for '$keyId' had no payload")
+        return Base64.getDecoder().decode(decrypted)
     }
 
     /**

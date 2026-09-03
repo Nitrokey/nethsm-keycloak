@@ -7,9 +7,16 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.keycloak.crypto.Algorithm
+import org.keycloak.jose.jwe.JWEConstants
+import java.security.spec.MGF1ParameterSpec
+import javax.crypto.Cipher
+import javax.crypto.spec.OAEPParameterSpec
+import javax.crypto.spec.PSource
 import java.security.MessageDigest
 import java.security.Signature
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -59,6 +66,44 @@ class NetHsmContractIT {
             update(message)
         }
         assertTrue(verifier.verify(signature), "NetHSM PKCS1 mode no longer produces RS256-compatible signatures")
+    }
+
+    /**
+     * The JOSE side of the same problem. `RSA-OAEP-256` is RSAES-OAEP with SHA-256 *and*
+     * MGF1-SHA256; NetHSM's API names only the digest and documents nothing about the
+     * mask generation function, so this pins the observed behaviour in both directions.
+     * If firmware ever moved to a fixed MGF1-SHA1, RSA-OAEP-256 would silently stop
+     * interoperating and this test is what would say so.
+     */
+    @Test
+    fun `OAEP decryption pairs MGF1 with the same digest, as JOSE requires`() {
+        val key = assertNotNull(client.key("kc-rsa-oaep"), "testbed key kc-rsa-oaep is missing")
+        val plaintext = "content-encryption-key".toByteArray()
+
+        fun wrap(digest: String, mgf1: MGF1ParameterSpec): ByteArray =
+            Cipher.getInstance("RSA/ECB/OAEPPadding").apply {
+                init(
+                    Cipher.ENCRYPT_MODE,
+                    key.publicKey,
+                    OAEPParameterSpec(digest, "MGF1", mgf1, PSource.PSpecified.DEFAULT),
+                )
+            }.doFinal(plaintext)
+
+        listOf(
+            Triple(JWEConstants.RSA_OAEP_256, "SHA-256", MGF1ParameterSpec.SHA256),
+            Triple(JWEConstants.RSA_OAEP, "SHA-1", MGF1ParameterSpec.SHA1),
+        ).forEach { (algorithm, digest, mgf1) ->
+            val mode = NetHsmAlgorithms.decryptMode(algorithm)
+
+            val unwrapped = client.decryptCek("kc-rsa-oaep", mode, wrap(digest, mgf1))
+            assertContentEquals(plaintext, unwrapped, "$algorithm did not round-trip through $mode")
+
+            // The negative direction is the one that proves MGF1 is not fixed.
+            val mismatched = if (mgf1 == MGF1ParameterSpec.SHA256) MGF1ParameterSpec.SHA1 else MGF1ParameterSpec.SHA256
+            assertFails("$mode accepted a mismatched MGF1, so MGF1 does not track the digest") {
+                client.decryptCek("kc-rsa-oaep", mode, wrap(digest, mismatched))
+            }
+        }
     }
 
     @Test

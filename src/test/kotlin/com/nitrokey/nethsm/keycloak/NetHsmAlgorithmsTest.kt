@@ -4,11 +4,13 @@ import com.nitrokey.nethsm.keycloak.client.NetHsmKey
 import org.keycloak.common.crypto.CryptoIntegration
 import org.keycloak.crypto.Algorithm
 import org.keycloak.crypto.ECDSAAlgorithm
+import org.keycloak.jose.jwe.JWEConstants
 import java.security.KeyPairGenerator
 import java.security.PublicKey
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -128,6 +130,55 @@ class NetHsmAlgorithmsTest {
         val raw = ByteArray(64) { it.toByte() }
         assertContentEquals(raw, NetHsmAlgorithms.toJoseSignature(Algorithm.EdDSA, raw))
         assertContentEquals(raw, NetHsmAlgorithms.toJoseSignature(Algorithm.RS256, raw))
+    }
+
+    @Test
+    fun `decrypt mechanisms decide which key-management algorithms a key serves`() {
+        assertEquals(
+            setOf(JWEConstants.RSA_OAEP_256),
+            NetHsmAlgorithms.supportedEncryptionAlgorithms(key("RSA", "RSA_Decryption_OAEP_SHA256")),
+        )
+        assertEquals(
+            setOf(JWEConstants.RSA_OAEP, JWEConstants.RSA_OAEP_256),
+            NetHsmAlgorithms.supportedEncryptionAlgorithms(
+                key("RSA", "RSA_Decryption_OAEP_SHA1", "RSA_Decryption_OAEP_SHA256"),
+            ),
+        )
+    }
+
+    @Test
+    fun `signing and encryption use are not interchangeable`() {
+        val signing = key("RSA", "RSA_Signature_PKCS1")
+        val decrypting = key("RSA", "RSA_Decryption_OAEP_SHA256")
+
+        assertTrue(NetHsmAlgorithms.supportedEncryptionAlgorithms(signing).isEmpty(), "a signing key is not a JWE key")
+        assertTrue(NetHsmAlgorithms.supportedAlgorithms(decrypting).isEmpty(), "a decrypt key cannot sign")
+    }
+
+    @Test
+    fun `a PKCS1 decrypt key is never offered, since RSA1_5 is excluded`() {
+        assertTrue(NetHsmAlgorithms.supportedEncryptionAlgorithms(key("RSA", "RSA_Decryption_PKCS1")).isEmpty())
+    }
+
+    @Test
+    fun `key-management algorithms map to NetHSM decrypt modes`() {
+        assertEquals("OAEP_SHA1", NetHsmAlgorithms.decryptMode(JWEConstants.RSA_OAEP))
+        assertEquals("OAEP_SHA256", NetHsmAlgorithms.decryptMode(JWEConstants.RSA_OAEP_256))
+    }
+
+    /**
+     * Not an oversight in either case: RSA1_5 is a Bleichenbacher oracle on
+     * attacker-supplied ciphertext, and ECDH-ES needs a key-agreement operation NetHSM
+     * does not have.
+     */
+    @Test
+    fun `RSA1_5 and ECDH-ES are refused rather than silently mapped`() {
+        assertEquals(setOf(JWEConstants.RSA_OAEP, JWEConstants.RSA_OAEP_256), NetHsmAlgorithms.cekAlgorithms)
+        listOf(JWEConstants.RSA1_5, JWEConstants.ECDH_ES, JWEConstants.ECDH_ES_A128KW).forEach {
+            assertFailsWith<UnsupportedOperationException>("$it must not map") {
+                NetHsmAlgorithms.decryptMode(it)
+            }
+        }
     }
 
     @Test

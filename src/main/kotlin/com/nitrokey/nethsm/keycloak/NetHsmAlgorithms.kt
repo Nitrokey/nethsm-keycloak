@@ -3,6 +3,7 @@ package com.nitrokey.nethsm.keycloak
 import com.nitrokey.nethsm.keycloak.client.NetHsmKey
 import org.keycloak.crypto.Algorithm
 import org.keycloak.crypto.ECDSAAlgorithm
+import org.keycloak.jose.jwe.JWEConstants
 
 /**
  * Derives what a NetHSM key can be used for from its own metadata, so no algorithm has
@@ -87,6 +88,47 @@ object NetHsmAlgorithms {
         key.type in EC_TYPE_TO_ALGORITHM ->
             if (MECH_ECDSA in key.mechanisms) setOf(EC_TYPE_TO_ALGORITHM.getValue(key.type)) else emptySet()
         else -> emptySet()
+    }
+
+    /**
+     * JOSE key-management algorithms to NetHSM `DecryptMode`.
+     *
+     * NetHSM names only the digest, but its OAEP pairs MGF1 with that same digest, which
+     * is what JOSE requires. That is measured, not documented -- NetHsmContractIT pins it.
+     *
+     * RSA1_5 is absent deliberately. NetHSM offers `RSA_Decryption_PKCS1`, but PKCS#1
+     * v1.5 decryption of ciphertext supplied by unauthenticated callers is the classic
+     * Bleichenbacher oracle, so this extension does not offer it at all.
+     */
+    private val DECRYPT_MODES = mapOf(
+        JWEConstants.RSA_OAEP to "OAEP_SHA1",
+        JWEConstants.RSA_OAEP_256 to "OAEP_SHA256",
+    )
+
+    /** NetHSM mechanisms that make a key usable for the corresponding JOSE algorithm. */
+    private val DECRYPT_MECHANISMS = mapOf(
+        JWEConstants.RSA_OAEP to "RSA_Decryption_OAEP_SHA1",
+        JWEConstants.RSA_OAEP_256 to "RSA_Decryption_OAEP_SHA256",
+    )
+
+    /** The JOSE key-management algorithms this extension can back with a NetHSM key. */
+    val cekAlgorithms: Set<String> get() = DECRYPT_MODES.keys
+
+    /** The NetHSM `DecryptMode` for a JOSE key-management algorithm. */
+    fun decryptMode(algorithm: String): String = DECRYPT_MODES[algorithm]
+        ?: throw UnsupportedOperationException("no NetHSM decrypt mode for $algorithm")
+
+    /** The NetHSM mechanism a key must have to serve [algorithm]. */
+    fun decryptMechanism(algorithm: String): String = DECRYPT_MECHANISMS[algorithm]
+        ?: throw UnsupportedOperationException("no NetHSM decrypt mechanism for $algorithm")
+
+    /**
+     * JOSE key-management algorithms this key can serve, from its decrypt mechanisms.
+     * Empty means the key is not usable for JWE and discovery should skip it.
+     */
+    fun supportedEncryptionAlgorithms(key: NetHsmKey): Set<String> {
+        if (key.type != "RSA") return emptySet()
+        return DECRYPT_MECHANISMS.filterValues { it in key.mechanisms }.keys
     }
 
     /** The JCA algorithm name for a NetHSM key type, used to label opaque key handles. */

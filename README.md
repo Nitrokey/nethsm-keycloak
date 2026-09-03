@@ -3,10 +3,11 @@
 A Keycloak key provider that natively integrates with [Nitrokey NetHSM](https://www.nitrokey.com/products/nethsm)
 to perform key operations (e.g. signing) while private keys never leave the HSM.
 
-Status: **signing complete and hardened.** Keycloak access tokens signed inside the
-HSM verify against the realm's published JWKS for RSA, ECDSA and Ed25519, the connection
-is pooled and certificate-pinned, and an unreachable NetHSM fails closed rather than
-letting Keycloak fall back to a software key.
+Status: **signing and JWE decryption both working end to end.** Keycloak access
+tokens signed inside the HSM verify against the realm's published JWKS for RSA, ECDSA and
+Ed25519, and an encrypted request object is decrypted with an HSM-held RSA key. The
+connection is pooled and certificate-pinned, and an unreachable NetHSM fails closed
+rather than letting Keycloak fall back to a software key.
 
 ## Quality Warning
 
@@ -60,6 +61,7 @@ names the fingerprint it actually saw, which is the value to pin.
 
 | Setting | Meaning |
 |---|---|
+| Key use | `sig` to sign tokens, `enc` to decrypt inbound JWE |
 | Key ID prefix | every NetHSM key whose id starts with this is published by this realm |
 | Algorithm | which algorithm the keys are published under |
 | Priority / Enabled / Active | standard Keycloak key provider settings |
@@ -85,6 +87,41 @@ key — only the RS256/384/512 choice for a hash-agnostic PKCS1 key.
 | PS256/384/512 | RSA | `PSS_SHA256/384/512` | send the bare digest |
 | ES256/384/512 | EC_P256/384/521 | `ECDSA` | returns ASN.1 DER; converted to fixed-width R‖S using Keycloak's own `ECDSAAlgorithm`, so HSM-backed and local EC keys are byte-identical |
 | EdDSA | Curve25519 | `EdDSA` | send the **raw message**, not a digest — Ed25519 hashes internally and derives its nonce from that hash. Returns 64-byte r‖s, already JOSE-shaped |
+
+### Key management (JWE)
+
+Only the unwrap direction can involve the HSM. Encrypting *to* a client uses that
+client's public key, so Keycloak never asks NetHSM to encrypt.
+
+| Keycloak `alg` | NetHSM `DecryptMode` | Mechanism |
+|---|---|---|
+| `RSA-OAEP` | `OAEP_SHA1` | `RSA_Decryption_OAEP_SHA1` |
+| `RSA-OAEP-256` | `OAEP_SHA256` | `RSA_Decryption_OAEP_SHA256` |
+
+NetHSM's API names only the digest and documents nothing about the mask generation
+function. Measured behaviour is that MGF1 uses the same digest, which is what JOSE
+requires; `NetHsmContractIT` pins this in both directions so a firmware change cannot
+break `RSA-OAEP-256` silently.
+
+A decrypt failure is reported without a reason. The ciphertext arrives from
+unauthenticated callers, so distinguishing a padding failure from any other failure would
+turn this into a usable RSA decryption oracle.
+
+#### Why this goes through JCA rather than a Keycloak SPI
+
+Keycloak consults its `CekManagementProvider` SPI only when it *encrypts*. Inbound JWE is
+decrypted by `DefaultRsaKeyEncryptionJWEAlgorithmProvider`, which does a plain
+`Cipher.getInstance(transformation).init(DECRYPT_MODE, key)` — the SPI is never asked. An
+earlier attempt to shadow that SPI registered correctly and won its slot, and still never
+ran on the path that mattered.
+
+So the extension registers a JCA provider instead. JCA defers `Cipher` provider selection
+until `init` and skips providers that reject the key, so one that accepts the opaque
+NetHSM key handle is chosen with no change to Keycloak. It is appended last and declares
+`SupportedKeyClasses`, so ordinary RSA keys never reach it and keep using the platform
+implementation. PKCS#1 v1.5 padding is refused, for the reason above.
+
+### Verified
 
 Verified end to end against a real NetHSM, each token checked with an independent
 library against the realm JWKS: RS256, RS384, PS256, ES256, ES384, ES512, EdDSA.
@@ -137,7 +174,7 @@ under any of them.
 | `HS256` / `HS384` / `HS512` | HMAC over a shared secret. NetHSM stores AES keys but exposes no HMAC operation, and a symmetric realm key has no HSM story worth having. |
 | `ECDH-ES`, `ECDH-ES+A128KW`, `+A192KW`, `+A256KW` | Require an ECDH key-agreement (derive) operation. NetHSM has none, so these can never be HSM-backed. |
 | `RSA1_5` | NetHSM could do it (`RSA_Decryption_PKCS1`), but it is deliberately excluded: PKCS#1 v1.5 decryption of attacker-supplied ciphertext is the classic Bleichenbacher oracle, and the ciphertext here arrives from unauthenticated callers. |
-| `RSA-OAEP`, `RSA-OAEP-256` | Supported by NetHSM and planned, but not implemented yet — see [Known limitations](#known-limitations). |
+| `A128KW`, `A192KW`, `A256KW` | Symmetric key wrapping. Same reason as `HS*`. |
 | `ML-DSA-44/65/87` | Post-quantum signatures. No NetHSM mechanism. |
 | Brainpool curves, `EC_P256K1` | NetHSM supports these key types, but JOSE defines no `alg` for them. |
 
@@ -146,10 +183,6 @@ JOSE equivalent and are out of scope.
 
 ## Known limitations
 
-- **Signing only.** The framework abstracts `SignatureProvider`, not
-  `CekManagementProvider`, so HSM-backed RSA-OAEP for encrypted tokens (JWE) is not
-  covered. NetHSM supports OAEP decrypt, so this is buildable, but it is net-new work in
-  the framework layer.
 - **OID4VC credential issuance will not use the HSM.** `KeyWrapper.cloneKey()` hardcodes
   `new KeyWrapper()` and so erases the `HsmKeyWrapper` subtype that dispatch relies on.
   In Keycloak 26.7.3 its only caller is
@@ -161,8 +194,10 @@ JOSE equivalent and are out of scope.
 
 | Path | What |
 |---|---|
-| `src/main/kotlin/.../hsm/` | Signature-provider framework |
+| `src/main/kotlin/.../hsm/` | Signature-provider picking framework |
 | `src/main/kotlin/.../hsm/alg/` | One `SignatureProviderFactory` per JOSE signing algorithm |
+| `src/main/kotlin/.../client/` | NetHSM REST client, discovery and caching |
+| `src/main/kotlin/.../jca/` | JCA provider making an HSM-held key usable for RSA-OAEP decryption |
 | `docker/` | NetHSM + Keycloak testbed |
 
 ## Build and test
@@ -223,12 +258,13 @@ recreated, so re-run it after each `up --build`.
 - NetHSM API: <https://localhost:8443/api/v1> (self-signed cert)
 - NetHSM operator: `keycloak` / `KeycloakKeycloak`
 
-`docker/nethsm/provision.sh` generates one key per sign mode Keycloak needs:
+`docker/nethsm/provision.sh` generates one key per NetHSM mode Keycloak needs:
 
 | Key id | NetHSM type | Mechanism | For |
 |---|---|---|---|
 | `kc-rsa-pkcs1` | RSA 2048 | `RSA_Signature_PKCS1` | RS256/384/512 |
 | `kc-rsa-pss` | RSA 2048 | `RSA_Signature_PSS_SHA*` | PS256/384/512 |
+| `kc-rsa-oaep` | RSA 2048 | `RSA_Decryption_OAEP_SHA1/SHA256` | RSA-OAEP, RSA-OAEP-256 |
 | `kc-ec-p256` | EC_P256 | `ECDSA_Signature` | ES256 |
 | `kc-ec-p384` | EC_P384 | `ECDSA_Signature` | ES384 |
 | `kc-ec-p521` | EC_P521 | `ECDSA_Signature` | ES512 |
@@ -240,6 +276,9 @@ recreated, so re-run it after each `up --build`.
 NAME=nethsm-es256 KEY_PREFIX=kc-ec-p256  ALGORITHM=ES256 ./keycloak/register-provider.sh
 NAME=nethsm-eddsa KEY_PREFIX=kc-ed25519  ALGORITHM=EdDSA ./keycloak/register-provider.sh
 ```
+
+The script registers signing keys. An encryption key needs `keyUse` set to `enc`, which
+is a component setting rather than a script option — configure it in the admin console.
 
 Tear down with `docker compose down`.
 

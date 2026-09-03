@@ -70,6 +70,11 @@ generate_key() {
 generate_key kc-rsa-pkcs1 RSA 2048 '"RSA_Signature_PKCS1"'
 # PS256/384/512 -- SignMode PSS_SHA*, bare digest.
 generate_key kc-rsa-pss RSA 2048 '"RSA_Signature_PSS_SHA256","RSA_Signature_PSS_SHA384","RSA_Signature_PSS_SHA512"'
+# RSA-OAEP / RSA-OAEP-256 -- DecryptMode OAEP_SHA1 / OAEP_SHA256, for unwrapping a JWE
+# content encryption key. NetHSM names only the digest and says nothing about the mask
+# generation function, so NetHsmContractIT pins that MGF1 tracks the digest.
+generate_key kc-rsa-oaep RSA 2048 '"RSA_Decryption_OAEP_SHA1","RSA_Decryption_OAEP_SHA256"'
+
 # ES256/384/512 -- SignMode ECDSA. The curve alone determines the algorithm. NetHSM
 # returns ASN.1 DER, which has to be converted to fixed-width R||S for JOSE.
 generate_key kc-ec-p256 EC_P256 '' '"ECDSA_Signature"'

@@ -4,11 +4,14 @@ import com.nitrokey.nethsm.keycloak.client.KeyDiscovery
 import com.nitrokey.nethsm.keycloak.client.NetHsmClient
 import com.nitrokey.nethsm.keycloak.client.NetHsmConfig
 import com.nitrokey.nethsm.keycloak.hsm.HsmKeyProviderFactory
+import com.nitrokey.nethsm.keycloak.jca.NetHsmSecurityProvider
 import org.jboss.logging.Logger
 import org.keycloak.Config
 import org.keycloak.component.ComponentModel
 import org.keycloak.component.ComponentValidationException
 import org.keycloak.crypto.Algorithm
+import org.keycloak.crypto.KeyUse
+import org.keycloak.jose.jwe.JWEConstants
 import org.keycloak.keys.Attributes
 import org.keycloak.models.KeycloakSession
 import org.keycloak.models.KeycloakSessionFactory
@@ -41,6 +44,7 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
             .property(Attributes.PRIORITY_PROPERTY)
             .property(Attributes.ENABLED_PROPERTY)
             .property(Attributes.ACTIVE_PROPERTY)
+            .property(KEY_USE_PROPERTY)
             .property(KEY_PREFIX_PROPERTY)
             .property(ALGORITHM_PROPERTY)
             .build()
@@ -52,6 +56,11 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
             log.debug("no spi-keys--nethsm--url configured; NetHSM key provider is inactive")
             return
         }
+
+        // Keycloak decrypts inbound JWE through plain JCA, not through its
+        // CekManagementProvider SPI, so this is the only way an HSM-held key can be used
+        // for it. Registered before any key is handed out.
+        NetHsmSecurityProvider.install()
 
         val netHsmClient = NetHsmClient(config)
         client = netHsmClient
@@ -87,7 +96,22 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
             .checkBoolean(Attributes.ENABLED_PROPERTY, false)
             .checkBoolean(Attributes.ACTIVE_PROPERTY, false)
             .checkRequired(KEY_PREFIX_PROPERTY)
+            .checkList(KEY_USE_PROPERTY, false)
             .checkList(ALGORITHM_PROPERTY, false)
+
+        // The two lists are disjoint, so a mismatched pair would silently publish nothing.
+        val algorithm = model.get(Attributes.ALGORITHM_KEY, DEFAULT_ALGORITHM)
+        val isEncryption = model.get(Attributes.KEY_USE, KeyUse.SIG.getSpecName())
+            .equals(KeyUse.ENC.getSpecName(), ignoreCase = true)
+        if (isEncryption && algorithm !in NetHsmAlgorithms.cekAlgorithms) {
+            throw ComponentValidationException(
+                "$algorithm cannot be used with key use 'enc'. Encryption keys must use one of " +
+                    NetHsmAlgorithms.cekAlgorithms.joinToString(", "),
+            )
+        }
+        if (!isEncryption && algorithm in NetHsmAlgorithms.cekAlgorithms) {
+            throw ComponentValidationException("$algorithm is a key management algorithm; set key use to 'enc'")
+        }
 
         val prefix = model.get(KEY_PREFIX_KEY, "")
         // NetHSM's ID schema is ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$; a prefix has to be a
@@ -116,6 +140,17 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
             "Uses keys stored in a Nitrokey NetHSM. Private keys never leave the HSM. " +
                 "Connection and credentials come from spi-keys--nethsm--* server configuration."
 
+        val KEY_USE_PROPERTY = ProviderConfigProperty(
+            Attributes.KEY_USE,
+            "Key use",
+            "Whether these keys sign tokens ('sig') or decrypt inbound JWE ('enc'). Encrypting " +
+                "to a client uses that client's public key and never involves the HSM.",
+            ProviderConfigProperty.LIST_TYPE,
+            KeyUse.SIG.getSpecName(),
+            KeyUse.SIG.getSpecName(),
+            KeyUse.ENC.getSpecName(),
+        )
+
         const val KEY_PREFIX_KEY = "keyPrefix"
         val KEY_PREFIX_PROPERTY = ProviderConfigProperty(
             KEY_PREFIX_KEY,
@@ -140,6 +175,9 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
             Algorithm.PS256, Algorithm.PS384, Algorithm.PS512,
             Algorithm.ES256, Algorithm.ES384, Algorithm.ES512,
             Algorithm.EdDSA,
+            // Key management, for key use 'enc'. RSA1_5 and ECDH-ES* are absent by
+            // design -- see NetHsmAlgorithms and the README.
+            JWEConstants.RSA_OAEP, JWEConstants.RSA_OAEP_256,
         )
 
         private val KEY_PREFIX_PATTERN = Regex("^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")

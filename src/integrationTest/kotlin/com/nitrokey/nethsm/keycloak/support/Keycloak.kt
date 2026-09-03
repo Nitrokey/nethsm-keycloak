@@ -90,14 +90,39 @@ class Keycloak(private val baseUrl: String = BASE_URL) {
         keyPrefix: String,
         algorithm: String,
         priority: Int = 200,
+        keyUse: String = "sig",
         token: String = adminToken(),
     ): HttpResponse<String> = admin(
         "POST", "/admin/realms/$realm/components", token,
         """{"name":"$name","providerId":"nethsm","providerType":"org.keycloak.keys.KeyProvider",
             "config":{"priority":["$priority"],"enabled":["true"],"active":["true"],
-                      "keyPrefix":["$keyPrefix"],"algorithm":["$algorithm"]}}""",
+                      "keyUse":["$keyUse"],"keyPrefix":["$keyPrefix"],"algorithm":["$algorithm"]}}""",
         expectSuccess = false,
     )
+
+    /** Creates a client from raw JSON, for cases the standard test client cannot cover. */
+    fun createClient(realm: String, json: String, token: String = adminToken()) {
+        admin("POST", "/admin/realms/$realm/clients", token, json)
+    }
+
+    /**
+     * Calls the authorization endpoint without following redirects, so the test can read
+     * the Location header Keycloak produced.
+     */
+    fun authorize(realm: String, query: Map<String, String>): HttpResponse<String> {
+        val encoded = query.entries.joinToString("&") { (k, v) ->
+            "$k=" + java.net.URLEncoder.encode(v, Charsets.UTF_8)
+        }
+        val noRedirects = HttpClient.newBuilder()
+            .followRedirects(HttpClient.Redirect.NEVER)
+            .connectTimeout(Duration.ofSeconds(5))
+            .build()
+        return noRedirects.send(
+            HttpRequest.newBuilder(URI.create("$baseUrl/realms/$realm/protocol/openid-connect/auth?$encoded"))
+                .GET().build(),
+            HttpResponse.BodyHandlers.ofString(),
+        )
+    }
 
     fun realmKeys(realm: String, token: String = adminToken()): HttpResponse<String> =
         admin("GET", "/admin/realms/$realm/keys", token, expectSuccess = false)
