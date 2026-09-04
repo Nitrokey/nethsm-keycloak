@@ -1,6 +1,7 @@
 package com.nitrokey.nethsm.keycloak
 
 import com.nitrokey.nethsm.keycloak.client.NetHsmClient
+import com.nitrokey.nethsm.keycloak.client.NetHsmUnavailableException
 import com.nitrokey.nethsm.keycloak.support.NetHsm
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -17,6 +18,8 @@ import java.security.Signature
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -35,6 +38,14 @@ import kotlin.test.assertTrue
 class NetHsmContractIT {
 
     private lateinit var client: NetHsmClient
+
+    private companion object {
+        /**
+         * Port 9 is discard: nothing listens on it in a test container, so the connection
+         * is refused immediately rather than timing out.
+         */
+        const val DEAD_ENDPOINT = "https://127.0.0.1:9/api/v1"
+    }
 
     @BeforeAll
     fun setUp() {
@@ -103,6 +114,35 @@ class NetHsmContractIT {
             assertFails("$mode accepted a mismatched MGF1, so MGF1 does not track the digest") {
                 client.decryptCek("kc-rsa-oaep", mode, wrap(digest, mismatched))
             }
+        }
+    }
+
+    /**
+     * Round-robin failover, against real sockets.
+     *
+     * A deployment with one URL never exercises the rotation, so it could break without
+     * any test noticing -- and it would then break at the moment it is most needed, when
+     * an operator has added a second NetHSM expecting exactly this.
+     */
+    @Test
+    fun `a dead endpoint is skipped for a live one`() {
+        NetHsm.clientFor(listOf(DEAD_ENDPOINT, NetHsm.URL)).use {
+            assertTrue(it.ready(), "should have failed over past the dead endpoint")
+            assertNotNull(it.key("kc-rsa-pkcs1"), "and be usable, not merely reachable")
+        }
+        // Order must not matter: starting on the live endpoint works too.
+        NetHsm.clientFor(listOf(NetHsm.URL, DEAD_ENDPOINT)).use {
+            assertTrue(it.ready())
+            assertNotNull(it.key("kc-rsa-pkcs1"))
+        }
+    }
+
+    /** Fail closed: no endpoint left must raise, never quietly report success. */
+    @Test
+    fun `every endpoint being dead fails rather than succeeding`() {
+        NetHsm.clientFor(listOf(DEAD_ENDPOINT, DEAD_ENDPOINT)).use {
+            assertFalse(it.ready())
+            assertFailsWith<NetHsmUnavailableException> { it.keyIds("kc-") }
         }
     }
 

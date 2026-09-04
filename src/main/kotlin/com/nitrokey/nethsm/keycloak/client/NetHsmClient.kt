@@ -17,13 +17,10 @@ import org.apache.http.util.EntityUtils
 import org.jboss.logging.Logger
 import org.keycloak.util.JsonSerialization
 import java.io.Closeable
-import java.security.MessageDigest
 import java.security.SecureRandom
-import java.security.cert.X509Certificate
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLContext
-import javax.net.ssl.X509TrustManager
 
 /** NetHSM unreachable, or reachable but not in the Operational state. Retryable. */
 class NetHsmUnavailableException(message: String, cause: Throwable? = null) :
@@ -203,31 +200,5 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, Cek
 
     override fun close() {
         http.close()
-    }
-
-    private object TrustAnything : X509TrustManager {
-        override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) = Unit
-        override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) = Unit
-        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-    }
-
-    private class FingerprintTrustManager(private val pins: Set<String>) : X509TrustManager {
-        override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String): Unit =
-            throw UnsupportedOperationException("client authentication is not used")
-
-        override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
-            val leaf = chain.firstOrNull()
-                ?: throw java.security.cert.CertificateException("empty certificate chain")
-            val actual = MessageDigest.getInstance("SHA-256")
-                .digest(leaf.encoded)
-                .joinToString("") { "%02x".format(it) }
-            if (actual !in pins) {
-                throw java.security.cert.CertificateException(
-                    "NetHSM certificate fingerprint $actual is not pinned",
-                )
-            }
-        }
-
-        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
     }
 }

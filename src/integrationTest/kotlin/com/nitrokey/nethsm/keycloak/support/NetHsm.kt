@@ -18,9 +18,12 @@ object NetHsm {
     const val OPERATOR_USER = "keycloak"
     const val OPERATOR_PASSPHRASE = "KeycloakKeycloak"
 
-    fun client(): NetHsmClient = NetHsmClient(
+    fun client(): NetHsmClient = clientFor(listOf(URL))
+
+    /** A client over an explicit endpoint list, for exercising round-robin and failover. */
+    fun clientFor(urls: List<String>): NetHsmClient = NetHsmClient(
         NetHsmConfig(
-            urls = listOf(URL),
+            urls = urls,
             username = OPERATOR_USER,
             passphrase = OPERATOR_PASSPHRASE,
             tlsFingerprints = emptySet(),
