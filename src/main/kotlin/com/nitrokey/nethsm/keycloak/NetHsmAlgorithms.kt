@@ -67,11 +67,26 @@ object NetHsmAlgorithms {
      * verbatim, so producing an EMSA-PKCS1-v1_5 signature means prefixing the digest
      * ourselves -- exactly what the API documentation asks for.
      */
-    private val DIGEST_INFO = mapOf(
-        Algorithm.RS256 to "3031300d060960864801650304020105000420".hexToByteArray(),
-        Algorithm.RS384 to "3041300d060960864801650304020205000430".hexToByteArray(),
-        Algorithm.RS512 to "3051300d060960864801650304020305000440".hexToByteArray(),
+    private val DIGEST_INFO_BY_DIGEST = mapOf(
+        "SHA-1" to "3021300906052b0e03021a05000414".hexToByteArray(),
+        "SHA-256" to "3031300d060960864801650304020105000420".hexToByteArray(),
+        "SHA-384" to "3041300d060960864801650304020205000430".hexToByteArray(),
+        "SHA-512" to "3051300d060960864801650304020305000440".hexToByteArray(),
     )
+
+    private val DIGEST_INFO = mapOf(
+        Algorithm.RS256 to DIGEST_INFO_BY_DIGEST.getValue("SHA-256"),
+        Algorithm.RS384 to DIGEST_INFO_BY_DIGEST.getValue("SHA-384"),
+        Algorithm.RS512 to DIGEST_INFO_BY_DIGEST.getValue("SHA-512"),
+    )
+
+    /**
+     * The DigestInfo header for a JCA digest name, for callers that know the digest rather
+     * than a JOSE algorithm -- the JCA signature provider, which is handed names like
+     * `SHA256withRSA`. SHA-1 appears here and not in [DIGEST_INFO] because JOSE has no
+     * RS1, but XML-DSig still offers `rsa-sha1` and some SAML peers require it.
+     */
+    fun digestInfoPrefixFor(digest: String): ByteArray? = DIGEST_INFO_BY_DIGEST[digest]?.copyOf()
 
     private val ECDSA_ALGORITHMS = setOf(Algorithm.ES256, Algorithm.ES384, Algorithm.ES512)
 

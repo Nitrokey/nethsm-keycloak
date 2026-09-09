@@ -1,6 +1,7 @@
 package com.nitrokey.nethsm.keycloak
 
 import com.nitrokey.nethsm.keycloak.client.CekDecryptor
+import com.nitrokey.nethsm.keycloak.client.MessageSigner
 import java.security.PrivateKey
 
 /**
@@ -16,13 +17,15 @@ import java.security.PrivateKey
  * NetHSM key and route the unwrap to the HSM instead of trying to use material it does
  * not have.
  *
- * [decryptor] is the one operation the handle can perform, rather than the whole client,
- * so holding a key does not confer the ability to sign or to read configuration.
+ * [decryptor] and [signer] are the two operations the handle can perform, rather than the
+ * whole client, so holding a key does not confer the ability to discover keys or read
+ * configuration. A handle for a signing key carries no decryptor and vice versa.
  */
 class NetHsmPrivateKeyHandle(
     val keyId: String,
     private val jcaAlgorithm: String,
     @Transient val decryptor: CekDecryptor? = null,
+    @Transient val signer: MessageSigner? = null,
 ) : PrivateKey {
 
     override fun getAlgorithm(): String = jcaAlgorithm

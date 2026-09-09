@@ -63,12 +63,14 @@ class NetHsmKeyProvider(
                     wrapper.status = status
                     wrapper.publicKey = key.publicKey
                     // Opaque handle, not key material. Keycloak's encryption SPI only
-                    // ever sees a java.security.Key, so this is how the JCA provider can
-                    // tell that an unwrap belongs to the HSM. See NetHsmPrivateKeyHandle.
+                    // ever sees a java.security.Key, and SAML hands the bare PrivateKey
+                    // to XML-DSig, so this is how the JCA provider can tell that an
+                    // unwrap or a signature belongs to the HSM. See NetHsmPrivateKeyHandle.
                     wrapper.privateKey = NetHsmPrivateKeyHandle(
                         key.id,
                         NetHsmAlgorithms.jcaAlgorithmFor(key.type),
-                        connection.client,
+                        decryptor = connection.client,
+                        signer = connection.client,
                     )
                 }
             }
