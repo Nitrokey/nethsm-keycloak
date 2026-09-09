@@ -6,15 +6,20 @@ import java.security.Provider
 import java.security.Security
 
 /**
- * A JCA provider offering exactly one thing: RSA-OAEP decryption with a key held in
- * NetHSM.
+ * A JCA provider for keys held in NetHSM: signing, and RSA-OAEP decryption.
+ *
+ * It exists because two things Keycloak does reach a key only through JCA and never
+ * through a Keycloak SPI. Inbound JWE is unwrapped with a plain `Cipher`, since the
+ * `CekManagementProvider` SPI is consulted only when encrypting; and SAML is signed by
+ * XML-DSig through `java.security.Signature`, which is handed the bare `PrivateKey`.
  *
  * Registered *last*, so the platform implementation is always tried first. JCA defers
- * provider selection for `Cipher` until `init`, and moves on when a provider rejects the
- * key, so ordinary RSA keys never reach this code and behaviour for them is unchanged.
+ * provider selection until `init` and moves on when a provider rejects the key, so
+ * ordinary RSA and EC keys never reach this code and behaviour for them is unchanged.
  * `SupportedKeyClasses` lets JCA skip this provider without instantiating anything.
  */
-class NetHsmSecurityProvider : Provider(NAME, "1.0", "NetHSM-backed RSA-OAEP decryption") {
+class NetHsmSecurityProvider :
+    Provider(NAME, "1.0", "NetHSM-backed signing and RSA-OAEP decryption") {
 
     init {
         put("Cipher.RSA", NetHsmCipherSpi::class.java.name)
@@ -29,6 +34,33 @@ class NetHsmSecurityProvider : Provider(NAME, "1.0", "NetHSM-backed RSA-OAEP dec
             ).joinToString("|"),
         )
         put("Cipher.RSA SupportedKeyClasses", NetHsmPrivateKeyHandle::class.java.name)
+
+        // Signing, for the callers that never see a Keycloak KeyWrapper and go straight
+        // to java.security.Signature. SAML is the one that matters: XML-DSig signs with
+        // the bare PrivateKey, so without these an assertion cannot be signed by the HSM.
+        // The RSA entries are exactly the names org.keycloak.saml.SignatureAlgorithm uses,
+        // minus SHA1withDSA, which NetHSM has no key type for.
+        signature("SHA1withRSA", NetHsmSignatureSpi.Sha1WithRsa::class.java)
+        signature("SHA256withRSA", NetHsmSignatureSpi.Sha256WithRsa::class.java)
+        signature("SHA384withRSA", NetHsmSignatureSpi.Sha384WithRsa::class.java)
+        signature("SHA512withRSA", NetHsmSignatureSpi.Sha512WithRsa::class.java)
+        signature("SHA256withRSAandMGF1", NetHsmSignatureSpi.Sha256WithRsaAndMgf1::class.java)
+        signature("SHA384withRSAandMGF1", NetHsmSignatureSpi.Sha384WithRsaAndMgf1::class.java)
+        signature("SHA512withRSAandMGF1", NetHsmSignatureSpi.Sha512WithRsaAndMgf1::class.java)
+        signature("SHA256withECDSA", NetHsmSignatureSpi.Sha256WithEcdsa::class.java)
+        signature("SHA384withECDSA", NetHsmSignatureSpi.Sha384WithEcdsa::class.java)
+        signature("SHA512withECDSA", NetHsmSignatureSpi.Sha512WithEcdsa::class.java)
+        signature("Ed25519", NetHsmSignatureSpi.Ed25519::class.java)
+    }
+
+    /**
+     * `SupportedKeyClasses` is what lets JCA skip this provider for an ordinary key
+     * without instantiating anything, so it is set for every algorithm rather than left
+     * to the InvalidKeyException in the SPI.
+     */
+    private fun signature(name: String, spi: Class<*>) {
+        put("Signature.$name", spi.name)
+        put("Signature.$name SupportedKeyClasses", NetHsmPrivateKeyHandle::class.java.name)
     }
 
     companion object {

@@ -42,7 +42,7 @@ class NetHsmRequestException(val status: Int, message: String) : RuntimeExceptio
  * pinning against a self-signed NetHSM certificate impossible without setting a
  * JVM-wide system property.
  */
-class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, CekDecryptor {
+class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, CekDecryptor, MessageSigner {
 
     private val log = Logger.getLogger(NetHsmClient::class.java)
     private val cursor = AtomicInteger(0)
@@ -90,15 +90,15 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, Cek
      * `POST /keys/{id}/sign`. [message] is whatever the mode expects: a DigestInfo-prefixed
      * digest for `PKCS1`, a bare digest for `PSS_*` and `ECDSA`, the raw message for `EdDSA`.
      */
-    fun sign(id: String, mode: String, message: ByteArray): ByteArray {
+    override fun sign(keyId: String, mode: String, message: ByteArray): ByteArray {
         val body = JsonSerialization.mapper.createObjectNode()
             .put("mode", mode)
             .put("message", Base64.getEncoder().encodeToString(message))
-        val post = HttpPost("/keys/${encode(id)}/sign").apply {
+        val post = HttpPost("/keys/${encode(keyId)}/sign").apply {
             entity = ByteArrayEntity(JsonSerialization.mapper.writeValueAsBytes(body), ContentType.APPLICATION_JSON)
         }
         val signature = request(post).path("signature").asText(null)
-            ?: throw NetHsmRequestException(200, "sign response for '$id' had no signature")
+            ?: throw NetHsmRequestException(200, "sign response for '$keyId' had no signature")
         return Base64.getDecoder().decode(signature)
     }
 

@@ -132,12 +132,27 @@ it is a ceiling, not fairness between decrypting and signing. Do not enable requ
 encryption on a client unless it is needed, and rate-limit the authorization endpoint at
 the proxy if it is exposed publicly.
 
+### SAML
+
+SAML signs through XML-DSig rather than Keycloak's signature SPI, so it is served by this
+extension's JCA provider (`DSA_SHA1` excepted — NetHSM has no DSA key type):
+
+| Keycloak SAML algorithm | JCA name | NetHSM `SignMode` |
+|---|---|---|
+| `RSA_SHA1`/`RSA_SHA256`/`RSA_SHA512` | `SHA1/256/512withRSA` | `PKCS1` |
+| `RSA_SHA256_MGF1`/`RSA_SHA512_MGF1` | `SHA256/512withRSAandMGF1` | `PSS_SHA256/512` |
+
 ### Verified
 
 Verified end to end against a NetHSM container, each token checked with an independent
 library against the realm JWKS: RS256, RS384, PS256, ES256, ES384, ES512, EdDSA.
 RS512, PS384 and PS512 share a code path with a verified sibling and differ only by a
 hash constant, which is covered by unit tests.
+
+For SAML, every registered JCA algorithm is signed in the HSM and verified locally, and a
+document is signed and validated through `XMLSignatureFactory` — the same API Keycloak's
+`XMLSignatureUtil` drives. That exercises the mechanism SAML uses, but **not** a real
+service provider; an end-to-end run against an SP is still outstanding.
 
 ## Key rotation
 
@@ -217,13 +232,9 @@ any key change: it should be the NetHSM key ID.
 
 - Unsupported ciphers: `HS256`, `HS384`, `HS512`, `ECDH-ES`, `ECDH-ES+A128KW`, `+A192KW`,
   `+A256KW`, `RSA1_5` (deliberately excluded to avoid Bleichenbacher oracle attacks),
-  `A128KW`, `A192KW`, `A256KW`, `ML-DSA-44/65/87`, Brainpool curves, `EC_P256K1`
-- **OID4VC credential issuance will not use the HSM.** `KeyWrapper.cloneKey()` hardcodes
-  `new KeyWrapper()` and so erases the `HsmKeyWrapper` subtype that dispatch relies on.
-  In Keycloak 26.7.3 its only caller is
-  `org.keycloak.protocol.oid4vc.issuance.signing.AbstractCredentialSigner`; OIDC and SAML
-  are unaffected.
-- **`HS*` algorithms are not registered** — symmetric keys are out of scope.
+  `A128KW`, `A192KW`, `A256KW`, `ML-DSA-44/65/87`, Brainpool curves, `EC_P256K1`, `DSA`
+  `HS*` (symmetric keys are out of scope)
+- OID4VC credential issuance will not use the HSM.
 
 ## Layout
 
