@@ -60,6 +60,9 @@ dependencies {
     // The contract test drives the extension's own NetHsmClient, so the integration
     // tests need the HTTP client Keycloak would otherwise have provided at runtime.
     add("integrationTestImplementation", "org.apache.httpcomponents:httpclient:4.5.14")
+    // Only to mint a certificate for an HSM key in a fixture: the JDK has no public API
+    // for issuing X.509. Already on the runtime classpath via keycloak-crypto-default.
+    add("integrationTestImplementation", "org.bouncycastle:bcpkix-jdk18on:1.84")
     add("integrationTestImplementation", "org.junit.jupiter:junit-jupiter-params:5.11.4")
     add("integrationTestRuntimeOnly", "org.keycloak:keycloak-crypto-default:$keycloakVersion")
 }

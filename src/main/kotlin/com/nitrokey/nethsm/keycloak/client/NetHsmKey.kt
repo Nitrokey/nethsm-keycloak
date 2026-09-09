@@ -5,6 +5,7 @@ import java.math.BigInteger
 import java.security.AlgorithmParameters
 import java.security.KeyFactory
 import java.security.PublicKey
+import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.ECParameterSpec
 import java.security.spec.ECPoint
@@ -27,7 +28,17 @@ class NetHsmKey(
     /** e.g. `RSA_Signature_PKCS1`, `ECDSA_Signature`, `EdDSA_Signature`. */
     val mechanisms: Set<String>,
     val publicKey: PublicKey,
+    /**
+     * The certificate NetHSM stores for this key, if any. Only SAML needs it, and only
+     * an operator can supply it -- NetHSM never derives one.
+     */
+    val certificate: X509Certificate? = null,
 ) {
+
+    /** Returns this key with [certificate] attached, or itself when there is none. */
+    internal fun withCertificate(certificate: X509Certificate?): NetHsmKey =
+        if (certificate == null) this else NetHsmKey(id, type, mechanisms, publicKey, certificate)
+
     companion object {
         /** NetHSM curve names to the JDK's names for the same curves. */
         private val EC_CURVES = mapOf(
