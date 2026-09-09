@@ -62,6 +62,9 @@ class NetHsmKeyProvider(
                     wrapper.algorithm = algorithm
                     wrapper.status = status
                     wrapper.publicKey = key.publicKey
+                    // Null unless an operator uploaded one. SAML puts it in KeyInfo and
+                    // publishes it in the IdP descriptor; JWS never asks.
+                    wrapper.certificate = key.certificate
                     // Opaque handle, not key material. Keycloak's encryption SPI only
                     // ever sees a java.security.Key, and SAML hands the bare PrivateKey
                     // to XML-DSig, so this is how the JCA provider can tell that an

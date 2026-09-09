@@ -142,6 +142,15 @@ extension's JCA provider (`DSA_SHA1` excepted — NetHSM has no DSA key type):
 | `RSA_SHA1`/`RSA_SHA256`/`RSA_SHA512` | `SHA1/256/512withRSA` | `PKCS1` |
 | `RSA_SHA256_MGF1`/`RSA_SHA512_MGF1` | `SHA256/512withRSAandMGF1` | `PSS_SHA256/512` |
 
+A SAML signature identifies its key by X.509 certificate, not by public key alone.
+Keycloak embeds that certificate in every document it signs and publishes it in the
+realm's SAML descriptor, which is where a service provider gets the key it will trust.
+NetHSM never creates certificates, so one has to be uploaded per signing key, out of band:
+
+1. Ask NetHSM for a CSR for the key
+2. Have your CA sign it
+3. Store the resulting certificate in the NetHSM
+
 ### Verified
 
 Verified end to end against a NetHSM container, each token checked with an independent

@@ -18,6 +18,8 @@ import org.jboss.logging.Logger
 import org.keycloak.util.JsonSerialization
 import java.io.Closeable
 import java.security.SecureRandom
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLContext
@@ -84,7 +86,12 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, Cek
         request(HttpGet("/keys/${encode(prefix)}*")).mapNotNull { it.path("id").asText(null) }
 
     /** `GET /keys/{id}` -- type, mechanisms and public key in one response. */
-    override fun key(id: String): NetHsmKey? = NetHsmKey.parse(id, request(HttpGet("/keys/${encode(id)}")))
+    override fun key(id: String): NetHsmKey? {
+        val key = NetHsmKey.parse(id, request(HttpGet("/keys/${encode(id)}"))) ?: return null
+        // Fetched here rather than lazily from the KeyWrapper: discovery caches the
+        // result, so this costs one call per key per refresh instead of one per request.
+        return key.withCertificate(certificate(id))
+    }
 
     /**
      * `POST /keys/{id}/sign`. [message] is whatever the mode expects: a DigestInfo-prefixed
@@ -122,11 +129,66 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, Cek
     }
 
     /**
+     * `GET /keys/{id}/cert` -- the certificate NetHSM stores alongside a key, as DER, or
+     * null when there is none.
+     *
+     * SAML needs this and JWS does not: XML-DSig is handed the certificate to place in
+     * `KeyInfo`, and a peer that validates against the IdP descriptor expects to find it
+     * there. NetHSM stores whatever bytes were uploaded, so pairing the certificate with
+     * the key is the operator's business, not something to re-derive here.
+     */
+    fun certificate(id: String): X509Certificate? {
+        val get = HttpGet("/keys/${encode(id)}/cert").apply {
+            setHeader("Accept", "application/octet-stream")
+        }
+        val der = try {
+            requestBytes(get)
+        } catch (e: NetHsmRequestException) {
+            // 404 is the ordinary case: no certificate was ever uploaded. Anything else
+            // is a misconfiguration, and saying so matters -- treating every refusal as
+            // "no certificate" is what hid an Accept-header bug during development. Null
+            // either way, because a certificate is optional and a realm that only signs
+            // JWTs must not lose its keys over one.
+            if (e.status == 404) {
+                log.debugf("NetHSM key '%s' has no certificate", id)
+            } else {
+                log.warnf(
+                    e,
+                    "NetHSM refused the certificate for key '%s' with HTTP %d; SAML would have none",
+                    id, e.status,
+                )
+            }
+            return null
+        } ?: return null
+
+        return try {
+            CertificateFactory.getInstance("X.509")
+                .generateCertificate(der.inputStream()) as X509Certificate
+        } catch (e: Exception) {
+            log.warnf(e, "NetHSM key '%s' has a stored certificate that is not X.509, ignoring it", id)
+            null
+        }
+    }
+
+    private fun request(request: HttpRequestBase): JsonNode {
+        val body = requestBytes(request)
+        // The health endpoints answer 200 with no body, hence the NullNode.
+        return if (body == null || body.isEmpty()) {
+            NullNode.instance
+        } else {
+            JsonSerialization.mapper.readTree(body)
+        }
+    }
+
+    /**
      * Tries each configured URL in turn, [NetHsmConfig.retries] times over. Only
      * transport failures, 412 and 5xx are retried; any other 4xx is a real answer and
      * repeating it just delays the error.
+     *
+     * Returns the raw body, because not every endpoint answers with JSON -- the
+     * certificate one returns DER.
      */
-    private fun request(request: HttpRequestBase): JsonNode {
+    private fun requestBytes(request: HttpRequestBase): ByteArray? {
         val path = request.uri.toString()
         var last: Exception? = null
         val attempts = (config.retries + 1) * config.urls.size
@@ -146,22 +208,20 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, Cek
         throw NetHsmUnavailableException("NetHSM unreachable after $attempts attempts: ${request.method} $path", last)
     }
 
-    private fun send(request: HttpRequestBase, base: String, path: String): JsonNode {
+    private fun send(request: HttpRequestBase, base: String, path: String): ByteArray? {
         request.uri = java.net.URI.create(base.trimEnd('/') + path)
         request.setHeader("Authorization", authorization)
-        request.setHeader("Accept", "application/json")
+        // Only when the caller has not asked for something else. The certificate endpoint
+        // serves DER and answers 406 to application/json.
+        if (request.getFirstHeader("Accept") == null) {
+            request.setHeader("Accept", "application/json")
+        }
 
         return http.execute(request).use { response ->
             val status = response.statusLine.statusCode
             val body = response.entity?.let { EntityUtils.toByteArray(it) }
             when {
-                // The health endpoints answer 200 with no body, hence the NullNode.
-                status in 200..299 ->
-                    if (body == null || body.isEmpty()) {
-                        NullNode.instance
-                    } else {
-                        JsonSerialization.mapper.readTree(body)
-                    }
+                status in 200..299 -> body
                 // 412 is NetHSM's "not Operational" -- locked or still booting.
                 status == 412 || status >= 500 ->
                     throw NetHsmUnavailableException("${request.method} $path returned $status")
