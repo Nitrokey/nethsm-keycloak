@@ -202,7 +202,22 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, Cek
             } catch (e: Exception) {
                 last = e
                 log.debugf(e, "NetHSM %s %s failed on %s (attempt %d/%d)", request.method, path, base, attempt + 1, attempts)
-                if (attempt < attempts - 1) Thread.sleep(config.retryDelay.toMillis())
+            }
+
+            // Slept outside the catch, so that an interrupt during the delay is not
+            // laundered into the failure it is delaying between.
+            if (attempt < attempts - 1) {
+                try {
+                    Thread.sleep(config.retryDelay.toMillis())
+                } catch (e: InterruptedException) {
+                    // The flag is restored before throwing, so the container still sees
+                    // the shutdown after every caller here is done with it. The
+                    // NetHsmUnavailableException is deliberate: callers already degrade
+                    // gracefully on that type, where a bare InterruptedException would
+                    // be read as an outage of unknown kind.
+                    Thread.currentThread().interrupt()
+                    throw NetHsmUnavailableException("interrupted while retrying ${request.method} $path", e)
+                }
             }
         }
         throw NetHsmUnavailableException("NetHSM unreachable after $attempts attempts: ${request.method} $path", last)
@@ -256,6 +271,17 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, Cek
         }
     }
 
+    /**
+     * Encodes `/` and nothing else -- deliberately not a general percent-encoder, and
+     * not safe to reuse as one. Both inputs are constrained upstream: NetHSM only mints
+     * key ids matching `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`, and the discovery prefix is
+     * validated against that same shape when the component is saved, so nothing that
+     * would need encoding can legitimately arrive here. `/` still gets the guard
+     * because it is the one character that would move the request to a different
+     * endpoint rather than simply fail it. If the input domain ever widens, replace
+     * this with a full unreserved-only encoder -- `URLEncoder` is form encoding and
+     * gets path segments wrong (space becomes `+`).
+     */
     private fun encode(segment: String) = segment.replace("/", "%2F")
 
     override fun close() {
