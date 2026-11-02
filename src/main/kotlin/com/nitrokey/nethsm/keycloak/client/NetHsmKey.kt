@@ -1,6 +1,7 @@
 package com.nitrokey.nethsm.keycloak.client
 
 import com.fasterxml.jackson.databind.JsonNode
+import com.nitrokey.nethsm.keycloak.CryptoConst
 import java.math.BigInteger
 import java.security.AlgorithmParameters
 import java.security.KeyFactory
@@ -57,6 +58,9 @@ class NetHsmKey(
             0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
         )
 
+        /** `public.data` is the raw 32-byte Ed25519 public key. */
+        private const val ED25519_DATA_SIZE = 32
+
         /**
          * Parses a `GET /keys/{id}` body. Returns null for key types this extension
          * cannot represent, so one unsupported key inside a realm's prefix does not
@@ -68,10 +72,10 @@ class NetHsmKey(
             val mechanisms = node.path("mechanisms").mapNotNull { it.asText(null) }.toSet()
             val public = node.path("public")
 
-            val publicKey = when {
-                type == "RSA" -> rsaPublicKey(public)
-                type == "Curve25519" -> ed25519PublicKey(public)
-                type in EC_CURVES -> ecPublicKey(public, EC_CURVES.getValue(type))
+            val publicKey = when (type) {
+                CryptoConst.TYPE_RSA -> rsaPublicKey(public)
+                CryptoConst.TYPE_CURVE25519 -> ed25519PublicKey(public)
+                in EC_CURVES -> ecPublicKey(public, EC_CURVES.getValue(type))
                 else -> null
             } ?: return null
 
@@ -90,7 +94,7 @@ class NetHsmKey(
                 BigInteger(1, decoder.decode(modulus)),
                 BigInteger(1, decoder.decode(exponent)),
             )
-            return KeyFactory.getInstance("RSA").generatePublic(spec)
+            return KeyFactory.getInstance(CryptoConst.TYPE_RSA).generatePublic(spec)
         }
 
         /** `public.data` is the uncompressed point: `0x04 || X || Y`. */
@@ -107,20 +111,19 @@ class NetHsmKey(
                 ),
                 curveParameters(jdkCurve),
             )
-            return KeyFactory.getInstance("EC").generatePublic(spec)
+            return KeyFactory.getInstance(CryptoConst.TYPE_EC).generatePublic(spec)
         }
 
         private fun curveParameters(jdkCurve: String): ECParameterSpec =
-            AlgorithmParameters.getInstance("EC")
+            AlgorithmParameters.getInstance(CryptoConst.TYPE_EC)
                 .apply { init(ECGenParameterSpec(jdkCurve)) }
                 .getParameterSpec(ECParameterSpec::class.java)
 
-        /** `public.data` is the raw 32-byte Ed25519 public key. */
         private fun ed25519PublicKey(public: JsonNode): PublicKey? {
             val data = public.path("data").asText(null) ?: return null
             val raw = Base64.getDecoder().decode(data)
-            if (raw.size != 32) return null
-            return KeyFactory.getInstance("Ed25519")
+            if (raw.size != ED25519_DATA_SIZE) return null
+            return KeyFactory.getInstance(CryptoConst.TYPE_ED25519)
                 .generatePublic(X509EncodedKeySpec(ED25519_SPKI_PREFIX + raw))
         }
     }

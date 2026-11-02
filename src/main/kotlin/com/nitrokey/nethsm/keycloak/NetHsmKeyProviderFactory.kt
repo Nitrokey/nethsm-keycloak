@@ -19,6 +19,7 @@ import org.keycloak.models.RealmModel
 import org.keycloak.provider.ConfigurationValidationHelper
 import org.keycloak.provider.ProviderConfigProperty
 import org.keycloak.provider.ProviderConfigurationBuilder
+import java.net.HttpURLConnection
 
 /**
  * Registers the `nethsm` key provider.
@@ -99,7 +100,7 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
      */
     private fun checkCredentials(netHsm: NetHsmConnection) {
         runCatching { netHsm.client.keyIds("") }.onFailure { e ->
-            if (e is NetHsmRequestException && (e.status == 401 || e.status == 403)) {
+            if (e is NetHsmRequestException && (e.status == HttpURLConnection.HTTP_UNAUTHORIZED || e.status == HttpURLConnection.HTTP_FORBIDDEN)) {
                 log.errorf(
                     "NetHSM rejected the configured credential with HTTP %d. Check " +
                         "spi-keys--nethsm--username and --passphrase; every realm using NetHSM " +
@@ -202,8 +203,8 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
          * provider could disagree about what a component is for.
          */
         fun keyUseOf(model: ComponentModel): KeyUse =
-            if (model.get(Attributes.KEY_USE, KeyUse.SIG.getSpecName())
-                    .equals(KeyUse.ENC.getSpecName(), ignoreCase = true)
+            if (model.get(Attributes.KEY_USE, KeyUse.SIG.specName)
+                    .equals(KeyUse.ENC.specName, ignoreCase = true)
             ) {
                 KeyUse.ENC
             } else {
@@ -220,9 +221,9 @@ class NetHsmKeyProviderFactory : HsmKeyProviderFactory<NetHsmKeyProvider> {
             "Whether these keys sign tokens ('sig') or decrypt inbound JWE ('enc'). Encrypting " +
                 "to a client uses that client's public key and never involves the HSM.",
             ProviderConfigProperty.LIST_TYPE,
-            KeyUse.SIG.getSpecName(),
-            KeyUse.SIG.getSpecName(),
-            KeyUse.ENC.getSpecName(),
+            KeyUse.SIG.specName,
+            KeyUse.SIG.specName,
+            KeyUse.ENC.specName,
         )
 
         const val KEY_PREFIX_KEY = "keyPrefix"

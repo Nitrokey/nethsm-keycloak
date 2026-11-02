@@ -1,5 +1,6 @@
 package com.nitrokey.nethsm.keycloak.client
 
+import com.nitrokey.nethsm.keycloak.CryptoConst
 import java.security.MessageDigest
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
@@ -33,7 +34,7 @@ internal class FingerprintTrustManager(private val pins: Set<String>) : X509Trus
     companion object {
         /** Lowercase hex SHA-256 of the certificate, the form `tls-fingerprints` expects. */
         fun fingerprintOf(certificate: X509Certificate): String =
-            MessageDigest.getInstance("SHA-256")
+            MessageDigest.getInstance(CryptoConst.TYPE_SHA_256)
                 .digest(certificate.encoded)
                 .joinToString("") { "%02x".format(it) }
     }
