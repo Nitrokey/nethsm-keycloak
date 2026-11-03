@@ -50,7 +50,7 @@ class SignatureProviderPicker(
         return (key as? HsmKeyWrapper)?.createSignatureVerifierContext() ?: delegate.verifier(key)
     }
 
-    override fun isAsymmetricAlgorithm(): Boolean = delegate.isAsymmetricAlgorithm()
+    override fun isAsymmetricAlgorithm(): Boolean = delegate.isAsymmetricAlgorithm
 
     override fun close() = delegate.close()
 }

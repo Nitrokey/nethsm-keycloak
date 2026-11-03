@@ -68,16 +68,16 @@ object NetHsmAlgorithms {
      * ourselves -- exactly what the API documentation asks for.
      */
     private val DIGEST_INFO_BY_DIGEST = mapOf(
-        "SHA-1" to "3021300906052b0e03021a05000414".hexToByteArray(),
-        "SHA-256" to "3031300d060960864801650304020105000420".hexToByteArray(),
-        "SHA-384" to "3041300d060960864801650304020205000430".hexToByteArray(),
-        "SHA-512" to "3051300d060960864801650304020305000440".hexToByteArray(),
+        CryptoConst.TYPE_SHA_1 to "3021300906052b0e03021a05000414".hexToByteArray(),
+        CryptoConst.TYPE_SHA_256 to "3031300d060960864801650304020105000420".hexToByteArray(),
+        CryptoConst.TYPE_SHA_384 to "3041300d060960864801650304020205000430".hexToByteArray(),
+        CryptoConst.TYPE_SHA_512 to "3051300d060960864801650304020305000440".hexToByteArray(),
     )
 
     private val DIGEST_INFO = mapOf(
-        Algorithm.RS256 to DIGEST_INFO_BY_DIGEST.getValue("SHA-256"),
-        Algorithm.RS384 to DIGEST_INFO_BY_DIGEST.getValue("SHA-384"),
-        Algorithm.RS512 to DIGEST_INFO_BY_DIGEST.getValue("SHA-512"),
+        Algorithm.RS256 to DIGEST_INFO_BY_DIGEST.getValue(CryptoConst.TYPE_SHA_256),
+        Algorithm.RS384 to DIGEST_INFO_BY_DIGEST.getValue(CryptoConst.TYPE_SHA_384),
+        Algorithm.RS512 to DIGEST_INFO_BY_DIGEST.getValue(CryptoConst.TYPE_SHA_512),
     )
 
     /**
@@ -94,14 +94,14 @@ object NetHsmAlgorithms {
      * Keycloak algorithms this key can sign with, given its type and enabled mechanisms.
      * Empty means the key is not usable for JWS signing and discovery should skip it.
      */
-    fun supportedAlgorithms(key: NetHsmKey): Set<String> = when {
-        key.type == "RSA" -> {
+    fun supportedAlgorithms(key: NetHsmKey): Set<String> = when (key.type) {
+        CryptoConst.TYPE_RSA -> {
             val fromPkcs1 = if (MECH_PKCS1 in key.mechanisms) PKCS1_ALGORITHMS else emptySet()
             fromPkcs1 + key.mechanisms.mapNotNull { PSS_MECHANISM_TO_ALGORITHM[it] }
         }
-        key.type == "Curve25519" ->
+        CryptoConst.TYPE_CURVE25519 ->
             if (MECH_EDDSA in key.mechanisms) setOf(Algorithm.EdDSA) else emptySet()
-        key.type in EC_TYPE_TO_ALGORITHM ->
+        in EC_TYPE_TO_ALGORITHM ->
             if (MECH_ECDSA in key.mechanisms) setOf(EC_TYPE_TO_ALGORITHM.getValue(key.type)) else emptySet()
         else -> emptySet()
     }
@@ -143,7 +143,7 @@ object NetHsmAlgorithms {
      * Empty means the key is not usable for JWE and discovery should skip it.
      */
     fun supportedEncryptionAlgorithms(key: NetHsmKey): Set<String> {
-        if (key.type != "RSA") return emptySet()
+        if (key.type != CryptoConst.TYPE_RSA) return emptySet()
         return DECRYPT_MECHANISMS.filterValues { it in key.mechanisms }.keys
     }
 
@@ -158,10 +158,10 @@ object NetHsmAlgorithms {
         if (use == KeyUse.ENC) supportedEncryptionAlgorithms(key) else supportedAlgorithms(key)
 
     /** The JCA algorithm name for a NetHSM key type, used to label opaque key handles. */
-    fun jcaAlgorithmFor(type: String): String = when {
-        type == "RSA" -> "RSA"
-        type == "Curve25519" -> Algorithm.Ed25519
-        type in EC_TYPE_TO_ALGORITHM -> "EC"
+    fun jcaAlgorithmFor(type: String): String = when (type) {
+        CryptoConst.TYPE_RSA -> CryptoConst.TYPE_RSA
+        CryptoConst.TYPE_CURVE25519 -> Algorithm.Ed25519
+        in EC_TYPE_TO_ALGORITHM -> "EC"
         else -> throw UnsupportedOperationException("no JCA algorithm for NetHSM key type $type")
     }
 

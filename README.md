@@ -4,11 +4,9 @@ A [Keycloak](https://www.keycloak.org/) key provider that natively integrates wi
 [Nitrokey NetHSM](https://www.nitrokey.com/products/nethsm) to perform key operations
 (e.g. signing) while private keys never leave the HSM.
 
-## Quality Warning
+## AI Disclosure
 
-**This Keycloak provider has been developed and reviewed entirely by an AI. It has been tested successfully
-by unit tests and integration tests. The code has not been reviewed by a human yet and therefore
-use it at your own risk.**
+**This provider was developed and reviewed with substantial AI assistance.**
 
 ## Features
 

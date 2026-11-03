@@ -2,6 +2,7 @@ package com.nitrokey.nethsm.keycloak.client
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.NullNode
+import com.nitrokey.nethsm.keycloak.CryptoConst
 import org.apache.http.client.config.RequestConfig
 import org.apache.http.client.methods.HttpGet
 import org.apache.http.client.methods.HttpPost
@@ -17,6 +18,7 @@ import org.apache.http.util.EntityUtils
 import org.jboss.logging.Logger
 import org.keycloak.util.JsonSerialization
 import java.io.Closeable
+import java.net.HttpURLConnection
 import java.security.SecureRandom
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
@@ -45,6 +47,11 @@ class NetHsmRequestException(val status: Int, message: String) : RuntimeExceptio
  * JVM-wide system property.
  */
 class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, CekDecryptor, MessageSigner {
+
+    companion object {
+        const val HSM_NOT_OPERATIONAL = 412
+        val HSM_HTTP_SUCCESS_RANGE = 200..299
+    }
 
     private val log = Logger.getLogger(NetHsmClient::class.java)
     private val cursor = AtomicInteger(0)
@@ -149,7 +156,7 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, Cek
             // "no certificate" is what hid an Accept-header bug during development. Null
             // either way, because a certificate is optional and a realm that only signs
             // JWTs must not lose its keys over one.
-            if (e.status == 404) {
+            if (e.status == HttpURLConnection.HTTP_NOT_FOUND) {
                 log.debugf("NetHSM key '%s' has no certificate", id)
             } else {
                 log.warnf(
@@ -162,7 +169,7 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, Cek
         } ?: return null
 
         return try {
-            CertificateFactory.getInstance("X.509")
+            CertificateFactory.getInstance(CryptoConst.TYPE_X509)
                 .generateCertificate(der.inputStream()) as X509Certificate
         } catch (e: Exception) {
             log.warnf(e, "NetHSM key '%s' has a stored certificate that is not X.509, ignoring it", id)
@@ -202,7 +209,22 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, Cek
             } catch (e: Exception) {
                 last = e
                 log.debugf(e, "NetHSM %s %s failed on %s (attempt %d/%d)", request.method, path, base, attempt + 1, attempts)
-                if (attempt < attempts - 1) Thread.sleep(config.retryDelay.toMillis())
+            }
+
+            // Slept outside the catch, so that an interrupt during the delay is not
+            // laundered into the failure it is delaying between.
+            if (attempt < attempts - 1) {
+                try {
+                    Thread.sleep(config.retryDelay.toMillis())
+                } catch (e: InterruptedException) {
+                    // The flag is restored before throwing, so the container still sees
+                    // the shutdown after every caller here is done with it. The
+                    // NetHsmUnavailableException is deliberate: callers already degrade
+                    // gracefully on that type, where a bare InterruptedException would
+                    // be read as an outage of unknown kind.
+                    Thread.currentThread().interrupt()
+                    throw NetHsmUnavailableException("interrupted while retrying ${request.method} $path", e)
+                }
             }
         }
         throw NetHsmUnavailableException("NetHSM unreachable after $attempts attempts: ${request.method} $path", last)
@@ -221,9 +243,8 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, Cek
             val status = response.statusLine.statusCode
             val body = response.entity?.let { EntityUtils.toByteArray(it) }
             when {
-                status in 200..299 -> body
-                // 412 is NetHSM's "not Operational" -- locked or still booting.
-                status == 412 || status >= 500 ->
+                status in HSM_HTTP_SUCCESS_RANGE -> body
+                status == HSM_NOT_OPERATIONAL || status >= HttpURLConnection.HTTP_INTERNAL_ERROR ->
                     throw NetHsmUnavailableException("${request.method} $path returned $status")
                 else -> throw NetHsmRequestException(status, "${request.method} $path returned $status")
             }
@@ -251,11 +272,22 @@ class NetHsmClient(private val config: NetHsmConfig) : Closeable, KeySource, Cek
             config.tlsFingerprints.isNotEmpty() -> FingerprintTrustManager(config.tlsFingerprints)
             else -> return SSLContext.getDefault()
         }
-        return SSLContext.getInstance("TLS").apply {
+        return SSLContext.getInstance(CryptoConst.TYPE_TLS).apply {
             init(null, arrayOf(trustManager), SecureRandom())
         }
     }
 
+    /**
+     * Encodes `/` and nothing else -- deliberately not a general percent-encoder, and
+     * not safe to reuse as one. Both inputs are constrained upstream: NetHSM only mints
+     * key ids matching `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`, and the discovery prefix is
+     * validated against that same shape when the component is saved, so nothing that
+     * would need encoding can legitimately arrive here. `/` still gets the guard
+     * because it is the one character that would move the request to a different
+     * endpoint rather than simply fail it. If the input domain ever widens, replace
+     * this with a full unreserved-only encoder -- `URLEncoder` is form encoding and
+     * gets path segments wrong (space becomes `+`).
+     */
     private fun encode(segment: String) = segment.replace("/", "%2F")
 
     override fun close() {

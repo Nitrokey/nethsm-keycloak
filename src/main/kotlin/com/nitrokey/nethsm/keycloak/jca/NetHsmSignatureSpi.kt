@@ -1,5 +1,6 @@
 package com.nitrokey.nethsm.keycloak.jca
 
+import com.nitrokey.nethsm.keycloak.CryptoConst
 import com.nitrokey.nethsm.keycloak.NetHsmAlgorithms
 import com.nitrokey.nethsm.keycloak.NetHsmPrivateKeyHandle
 import com.nitrokey.nethsm.keycloak.client.MessageSigner
@@ -149,11 +150,15 @@ abstract class NetHsmSignatureSpi(
         }
     }
 
-    @Deprecated("Superseded by engineSetParameter(AlgorithmParameterSpec)")
+    @Deprecated("Superseded by engineSetParameter(AlgorithmParameterSpec)",
+        ReplaceWith("throw UnsupportedOperationException(\"use engineSetParameter(AlgorithmParameterSpec)\")")
+    )
     override fun engineSetParameter(param: String?, value: Any?) =
         throw UnsupportedOperationException("use engineSetParameter(AlgorithmParameterSpec)")
 
-    @Deprecated("Superseded by engineGetParameters()")
+    @Deprecated("Superseded by engineGetParameters()",
+        ReplaceWith("throw UnsupportedOperationException(\"use engineGetParameters()\")")
+    )
     override fun engineGetParameter(param: String?): Any =
         throw UnsupportedOperationException("use engineGetParameters()")
 
@@ -166,18 +171,18 @@ abstract class NetHsmSignatureSpi(
     // it was looked up under. The names are JCA's, and the RSA ones are exactly what
     // Keycloak's org.keycloak.saml.SignatureAlgorithm asks for.
 
-    class Sha1WithRsa : NetHsmSignatureSpi("SHA-1", "PKCS1", prefixDigestInfo = true)
-    class Sha256WithRsa : NetHsmSignatureSpi("SHA-256", "PKCS1", prefixDigestInfo = true)
-    class Sha384WithRsa : NetHsmSignatureSpi("SHA-384", "PKCS1", prefixDigestInfo = true)
-    class Sha512WithRsa : NetHsmSignatureSpi("SHA-512", "PKCS1", prefixDigestInfo = true)
+    class Sha1WithRsa : NetHsmSignatureSpi(CryptoConst.TYPE_SHA_1, "PKCS1", prefixDigestInfo = true)
+    class Sha256WithRsa : NetHsmSignatureSpi(CryptoConst.TYPE_SHA_256, "PKCS1", prefixDigestInfo = true)
+    class Sha384WithRsa : NetHsmSignatureSpi(CryptoConst.TYPE_SHA_384, "PKCS1", prefixDigestInfo = true)
+    class Sha512WithRsa : NetHsmSignatureSpi(CryptoConst.TYPE_SHA_512, "PKCS1", prefixDigestInfo = true)
 
-    class Sha256WithRsaAndMgf1 : NetHsmSignatureSpi("SHA-256", "PSS_SHA256", prefixDigestInfo = false)
-    class Sha384WithRsaAndMgf1 : NetHsmSignatureSpi("SHA-384", "PSS_SHA384", prefixDigestInfo = false)
-    class Sha512WithRsaAndMgf1 : NetHsmSignatureSpi("SHA-512", "PSS_SHA512", prefixDigestInfo = false)
+    class Sha256WithRsaAndMgf1 : NetHsmSignatureSpi(CryptoConst.TYPE_SHA_256, "PSS_SHA256", prefixDigestInfo = false)
+    class Sha384WithRsaAndMgf1 : NetHsmSignatureSpi(CryptoConst.TYPE_SHA_384, "PSS_SHA384", prefixDigestInfo = false)
+    class Sha512WithRsaAndMgf1 : NetHsmSignatureSpi(CryptoConst.TYPE_SHA_512, "PSS_SHA512", prefixDigestInfo = false)
 
-    class Sha256WithEcdsa : NetHsmSignatureSpi("SHA-256", "ECDSA", prefixDigestInfo = false)
-    class Sha384WithEcdsa : NetHsmSignatureSpi("SHA-384", "ECDSA", prefixDigestInfo = false)
-    class Sha512WithEcdsa : NetHsmSignatureSpi("SHA-512", "ECDSA", prefixDigestInfo = false)
+    class Sha256WithEcdsa : NetHsmSignatureSpi(CryptoConst.TYPE_SHA_256, "ECDSA", prefixDigestInfo = false)
+    class Sha384WithEcdsa : NetHsmSignatureSpi(CryptoConst.TYPE_SHA_384, "ECDSA", prefixDigestInfo = false)
+    class Sha512WithEcdsa : NetHsmSignatureSpi(CryptoConst.TYPE_SHA_512, "ECDSA", prefixDigestInfo = false)
 
     class Ed25519 : NetHsmSignatureSpi(digest = null, mode = "EdDSA", prefixDigestInfo = false)
 }
