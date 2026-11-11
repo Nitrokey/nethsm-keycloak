@@ -24,7 +24,7 @@ Follow the [documentation](https://docs.nitrokey.com/nethsm/compatible/keycloak)
 
 | Extension | Keycloak |
 |---|---|
-| 1.0.x | 26.7.x |
+| 0.1.x | 26.8.x |
 
 The extension implements Keycloak SPIs that Keycloak itself marks internal and thus
 could change over different versions.

@@ -1,4 +1,4 @@
-ARG KEYCLOAK_VERSION=26.7.3
+ARG KEYCLOAK_VERSION=26.8.2
 FROM quay.io/keycloak/keycloak:${KEYCLOAK_VERSION}
 
 # The provider jar plus kotlin-stdlib -- everything Gradle's collectRuntimeJars staged.

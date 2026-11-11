@@ -42,7 +42,7 @@ dependencies {
     compileOnly("org.keycloak:keycloak-services:$keycloakVersion")
     compileOnly("org.keycloak:keycloak-core:$keycloakVersion")
 
-    // Shipped by Keycloak in lib/lib/main (4.5.14 in 26.7.x). Used instead of
+    // Shipped by Keycloak in lib/lib/main (4.5.14 through 26.8.x). Used instead of
     // java.net.http because that client forces hostname verification regardless of the
     // SSLParameters it is given, which rules out pinning a self-signed NetHSM cert.
     compileOnly("org.apache.httpcomponents:httpclient:4.5.14")
