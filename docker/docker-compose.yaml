@@ -38,7 +38,7 @@ services:
       context: ..
       dockerfile: docker/keycloak/Dockerfile
       args:
-        KEYCLOAK_VERSION: 26.7.3
+        KEYCLOAK_VERSION: 26.8.2
     depends_on:
       provision:
         condition: service_completed_successfully
